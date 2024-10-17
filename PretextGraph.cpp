@@ -98,6 +98,12 @@ Third-party software and resources used in this project, along with their respec
         WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 )thirdparty";
 
+#ifdef DEBUG
+    u32 NUM_THREADS = 1;  // define the thread used in DEBUG mode
+#else
+    u32 NUM_THREADS = 4;  // define the thread used in RELEASE mode
+#endif // DEBUG
+
 global_variable
 u08
 Status_Marco_Expression_Sponge = 0;
@@ -138,6 +144,7 @@ global_variable
 thread_pool *
 Thread_Pool;
 
+/*
 #pragma clang diagnostic push
 #pragma GCC diagnostic ignored "-Wreserved-id-macro"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
@@ -151,6 +158,39 @@ Thread_Pool;
 #define STB_SPRINTF_IMPLEMENTATION
 #include "stb_sprintf.h"
 #pragma clang diagnostic pop
+*/
+
+#ifdef __clang__  // Clang pragma
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wreserved-id-macro"
+    #pragma clang diagnostic ignored "-Wsign-conversion"
+    #pragma clang diagnostic ignored "-Wcast-align"
+    #pragma clang diagnostic ignored "-Wextra-semi-stmt"
+    #pragma clang diagnostic ignored "-Wunused-parameter"
+    #pragma clang diagnostic ignored "-Wconditional-uninitialized"
+    #pragma clang diagnostic ignored "-Wdouble-promotion"
+    #pragma clang diagnostic ignored "-Wpadded"
+    #pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#elif defined(__GNUC__) // GCC pragma
+    #pragma GCC diagnostic push
+    // #pragma GCC diagnostic ignored "-Wreserved-id-macro"
+    #pragma GCC diagnostic ignored "-Wsign-conversion"
+    #pragma GCC diagnostic ignored "-Wcast-align"
+    #pragma GCC diagnostic ignored "-Wunused-parameter"
+    #pragma GCC diagnostic ignored "-Wdouble-promotion"
+    #pragma GCC diagnostic ignored "-Wpadded"
+    #pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#endif
+
+// Include the header
+#define STB_SPRINTF_IMPLEMENTATION
+#include "stb_sprintf.h"
+
+#ifdef __clang__
+    #pragma clang diagnostic pop
+#elif defined(__GNUC__)
+    #pragma GCC diagnostic pop
+#endif
 
 #include "LineBufferQueue.cpp"
 
@@ -279,9 +319,32 @@ graph
     volatile s32 *values;
 };
 
+// used to store the graph values in f32 format
+// actually, don't need the graph_f struct, just use the f32 array to store the values
+// but leave this here will help the model to be easier to understand and 
+// easier to further extend the code
+struct
+graph_f
+{
+    f32 *values;
+};
+
+// the gap extension is different with the coverage and repeat density extensions
+// thus we have to add this flag to distinguish the gap extension with the other extensions
+// if there is "gap" in the extension name, then the flag will be set as true
+// and during the ProcessLine function, the gap value will not be weighted according to the length of the bin and pixel
+bool name_of_extension_is_gap = false;
 global_variable
 graph *
 Graph;
+
+global_variable
+graph_f *
+Graph_tmp;
+
+// add the mutex here to protect the graph->values while updating the values in multi-thread mode
+// before updating the graph->value calculation into f32, Ed used the atomic operation to update the values
+std::mutex mtx_global;  // define the glabal mutex to protext graph_f->values while updating the values
 
 global_variable
 volatile u08
@@ -298,19 +361,24 @@ void
 ProcessLine(void *in)
 {
     u32 sizeGraphArray = Map_Properties->textureResolution * Map_Properties->numberOfTextures1D;
-    u64 binSize_genome = (u64)((f64)Map_Properties->totalGenomeLength / (f64)sizeGraphArray);
+    u64 bp_per_pixel = (u64)((f64)Map_Properties->totalGenomeLength / (f64)sizeGraphArray);  // number of bps per pixel
 
-    line_buffer *buffer = (line_buffer *)in;
+    line_buffer *buffer = (line_buffer *)in; 
     u08 *line = buffer->line;
 
     ForLoop(buffer->nLines)
     {
         u32 nameBuff[16];
-        line = PushStringIntoIntArray(nameBuff, ArrayCount(nameBuff), line, '\t');
+
+        // std::string line_str((char *)line);
+        // std::string name_chr = line_str.substr(0, line_str.find('\t'));
+        // line_str.erase(0, name_chr.size() + 1);
+
+        line = PushStringIntoIntArray(nameBuff, ArrayCount(nameBuff), line, '\t'); // the buffer of line moved to '\t'
         contig *cont = 0;
-        if (ContigHashTableLookup(nameBuff, ArrayCount(nameBuff), &cont) && cont)
+        if (ContigHashTableLookup(nameBuff, ArrayCount(nameBuff), &cont) && cont) // find the contig and get the contig pointer
         {
-            u64 prevLength_genome = (u64)((f64)cont->previousCumulativeLength * (f64)Map_Properties->totalGenomeLength);
+            u64 prevLength_genome = (u64)((f64)cont->previousCumulativeLength * (f64)Map_Properties->totalGenomeLength); // get the previous cumulative length of the contig and transfer that into bp
 
             u32 len = 0;
             while (*++line != '\t') ++len;
@@ -320,35 +388,59 @@ ProcessLine(void *in)
             while (*++line != '\t') ++len;
             u64 to_genome = (u64)StringToInt(line, len) + prevLength_genome;
 
-            u64 sectionLength_genome = to_genome - from_genome;
+            u64 bp_left_in_this_bin = to_genome - from_genome;
 
             u32 value;
-            if (StringToInt_Check(line + 1, &value, '\n'))
+            if (StringToInt_Check(line + 1, &value, '\n')) // get the value of the bedgraph bin
             {
                 Data_Added = 1;
 
-                u32 from = (u32)(((f64)from_genome / (f64)Map_Properties->totalGenomeLength) * (f64)sizeGraphArray);
-                u32 to = (u32)(((f64)to_genome / (f64)Map_Properties->totalGenomeLength) * (f64)sizeGraphArray);
+                u32 from_pixel = (u32)(((f64)from_genome / (f64)Map_Properties->totalGenomeLength) * (f64)sizeGraphArray); // coordinate with unit of pixel
+                u32 to_pixel = (u32)(((f64)to_genome / (f64)Map_Properties->totalGenomeLength) * (f64)sizeGraphArray);
 
-                u64 binSize_ind = ((u64)(from + 1) * binSize_genome) - from_genome;
+                u64 bp_covered_in_current_pixel = ((u64)(from_pixel + 1) * bp_per_pixel) - from_genome; //  this is the bp covered in the current pixel
 
-                for (   u32 index = from;
-                        index <= to && index < sizeGraphArray;
+                // if (from_pixel != to_pixel) {
+                //     printf("from_pixel: %d, to_pixel: %d\n", from_pixel, to_pixel);
+                // }
+
+                for (   u32 index = from_pixel;
+                        index <= to_pixel && index < sizeGraphArray;
                         ++index )
                 {
-                    u32 nThisBin = (u32)(Min(binSize_ind, sectionLength_genome));
-                    s32 valueToAdd = (s32)(value * nThisBin);
-                    if (valueToAdd < 0) valueToAdd = s32_max;
+                    /* 
+                        遍历当前bin能够cover到的所有的pixel
 
-                    s32 oldValue = __atomic_fetch_add(Graph->values + index, valueToAdd, 0);
-                    if ((s32_max - oldValue) < valueToAdd)
-                    {
-                        s32 cap = s32_max;
-                        __atomic_store(Graph->values + index, &cap, 0);
+                        首先计算当前bin能够cover到的第一个pixel的bp数目，然后将该值添加到graph->values中
+                        然后更新当前bin剩下的bp数目，以及当前bin能够cover到的bp数目
+                    */
+                    u32 nThisBin = (u32)(Min(bp_covered_in_current_pixel, bp_left_in_this_bin)); 
+                    // s32 valueToAdd = (s32)(value * nThisBin);
+                    if (name_of_extension_is_gap) {
+                        // add the value to graph->values
+                        std::unique_lock<std::mutex> lock(mtx_global);
+                        Graph_tmp->values[index] = Min(Max(0.f, (f32)value + Graph_tmp->values[index]), 1.0f); // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
+                        lock.unlock();
                     }
+                    else {
+                        f32 valueToAdd_f = (f32)value * (f32)nThisBin / (f32)bp_per_pixel;
+                        // add the value to graph->values
+                        std::unique_lock<std::mutex> lock(mtx_global);
+                        Graph_tmp->values[index] = valueToAdd_f; // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
+                        lock.unlock();
+                    }
+                    // if (valueToAdd < 0) valueToAdd = s32_max;
 
-                    sectionLength_genome -= (u64)nThisBin;
-                    binSize_ind = binSize_genome;
+                    // s32 oldValue = __atomic_fetch_add(Graph->values + index, valueToAdd, 0);
+                    
+                    // if ((s32_max - oldValue) < valueToAdd)  // if the value is overflow, set this as maximum value (s32_max)
+                    // {
+                    //     s32 cap = s32_max;
+                    //     __atomic_store(Graph->values + index, &cap, 0);
+                    // }
+
+                    bp_left_in_this_bin -= (u64)nThisBin;
+                    bp_covered_in_current_pixel = bp_per_pixel;
                 }
 
                 if (!(__atomic_add_fetch(&Number_of_Lines_Read, 1, 0) & ((Pow2(Number_of_Lines_Print_Status_Every_Log2)) - 1)))
@@ -395,13 +487,21 @@ global_function
 void
 NormaliseGraph_Thread(void *in)
 {
+
+    /*
+        Normalise the graph data.
+
+        Graph->values = Graph->values * (mapResolution / totalGenomeLength)
+    
+    */
     normalise_graph_thread_data *data = (normalise_graph_thread_data *)in;
     u32 start = data->start;
     u32 nLanes = data->nLanes;
     u32 mapResolution = data->mapResolution;
 
-    f32 texelsPerBp = (f32)((f64)mapResolution / (f64)Map_Properties->totalGenomeLength);
-    s32 *dataPtr = ((s32 *)Graph->values) + start;
+    f32 texelsPerBp = (f32)((f64)mapResolution / (f64)Map_Properties->totalGenomeLength); // fraction of pixel per bp
+    s32 *dataPtr = ((s32 *)Graph->values) + start; // Graph->values with num_pixels s32 values which save the graph data
+
 #ifdef UsingAVX
     __m256 normFactor = _mm256_set1_ps (texelsPerBp);
     ForLoop(nLanes)
@@ -421,9 +521,9 @@ NormaliseGraph_Thread(void *in)
         dataPtr += 8;
     }
 #else
-    nLanes *= 2;
+    nLanes *= 2; // 2048
     __m128 normFactor = _mm_set1_ps (texelsPerBp);
-    ForLoop(nLanes)
+    ForLoop(nLanes)  // 4 values will be processed at one iteration
     {
 #pragma clang diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
@@ -437,7 +537,7 @@ NormaliseGraph_Thread(void *in)
 #pragma GCC diagnostic ignored "-Wcast-align"
         *(__m128i *)dataPtr = intLane;
 #pragma clang diagnostic pop
-        dataPtr += 4;
+        dataPtr += 4; // process 4 * s32
     }
 #endif
 }
@@ -509,12 +609,16 @@ GrabStdIn()
     u32 bufferPtr = 0;
 
     read_pool *readPool = CreateReadPool(&Working_Set);
-    readPool->handle =
-#ifdef DEBUG
-        open("test_in", O_RDONLY);
-#else
-    STDIN_FILENO;
-#endif
+    readPool->handle = STDIN_FILENO; // read from stdin
+
+// old version used to debug
+//     readPool->handle =
+// // #ifdef DEBUG
+// //         open("data_for_test/repeat_density.bedgraph", O_RDONLY);
+// // #else
+// //     STDIN_FILENO;
+// // #endif
+//     STDIN_FILENO; // read from stdin while running
 
     u08 line[KiloByte(16)];
     u32 linePtr = 0;
@@ -542,9 +646,9 @@ GrabStdIn()
                     line[128] = c;
                 }
                 
-                if ((u64)linePtr > (Line_Buffer_Size - bufferPtr))
+                if ((u64)linePtr > (Line_Buffer_Size - bufferPtr)) // 
                 {
-                    buffer->nLines = numLines;
+                    buffer->nLines = numLines; // number of lines in the buffer
                     ThreadPoolAddTask(Thread_Pool, ProcessLine, buffer);
 
                     buffer = TakeLineBufferFromQueue_Wait(Line_Buffer_Queue);
@@ -678,6 +782,14 @@ MainArgs
     if (nameBuffer[0])
     {
         PrintStatus("Graph name: \'%s\'", (char *)nameBuffer);
+
+        // update the name_of_extension_is_gap flag
+        std::string tmp_string((char *)nameBuffer);
+        if (tmp_string.find("gap") != std::string::npos)
+        {
+            name_of_extension_is_gap = true;
+            PrintStatus("The extension of the graph name is gap, set the name_of_extension_is_gap flag into true.");
+        }
     }
     else
     {
@@ -687,9 +799,9 @@ MainArgs
     }
 
     CreateMemoryArena(Working_Set, MegaByte(128));
-    Thread_Pool = ThreadPoolInit(&Working_Set, 4);
+    Thread_Pool = ThreadPoolInit(&Working_Set, NUM_THREADS);
 
-    if (outputFile)
+    if (outputFile) // if output file is specified, define the copy buffer. Copy the input file to output file.
     {
         copyBuffer = PushArray(Working_Set, u08, copyBufferSize);
         copyInFile = fopen((const char *)pretextFile, "rb");
@@ -729,7 +841,14 @@ MainArgs
                 file = 0;
             }
 
-            if (file)
+            if (!file)
+            {
+                PrintError("Invalid file format. \'%s\' is not a pretext file", pretextFile);
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+
+            /* Read file */
             {
                 u32 nBytesHeaderComp;
                 u32 nBytesHeader;
@@ -739,8 +858,15 @@ MainArgs
                 u08 *compressionBuffer = PushArray(Working_Set, u08, nBytesHeaderComp);
 
                 fread(compressionBuffer, 1, nBytesHeaderComp, file);
-                if (!libdeflate_deflate_decompress(decompressor, (const void *)compressionBuffer, nBytesHeaderComp, (void *)header, nBytesHeader, NULL))
-                {
+                if (!libdeflate_deflate_decompress(decompressor, (const void *)compressionBuffer, nBytesHeaderComp, (void *)header, nBytesHeader, NULL)) // decompress the header
+                {   
+
+                    if (outputFile && !(copyInFile && copyOutFile)) // outputfile exists, and not both of copyin and copyout files exist, then give the error
+                    {
+                        PrintError("Error copying input file");
+                        returnCode = EXIT_FAILURE;
+                    }
+
                     if (!outputFile || (copyInFile && copyOutFile))
                     {
                         if (outputFile)
@@ -838,15 +964,20 @@ MainArgs
                         u32 mapResolution = Map_Properties->textureResolution * Map_Properties->numberOfTextures1D;
                         Graph = PushStruct(Working_Set, graph);
 
-                        u32 graphPlusNameBufferSize = (sizeof(s32) * mapResolution) + sizeof(nameBuffer);
+                        u32 graphPlusNameBufferSize = (sizeof(f32) * mapResolution) + sizeof(nameBuffer);  // add the f32 also into this buffer
                         u08 *graphPlusNameBuffer = PushArray(Working_Set, u08, graphPlusNameBufferSize, 5);
 #pragma clang diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
                         Graph->values = (volatile s32 *)(graphPlusNameBuffer + sizeof(nameBuffer)); //PushArray(Working_Set, volatile s32, mapResolution, 5);
+                        // Graph->values_f = (volatile s32 *)(graphPlusNameBuffer + sizeof(nameBuffer) + (sizeof(s32) * mapResolution)); //PushArray(Working_Set, volatile s32, mapResolution, 5);
 #pragma clang diagnostic pop                      
-                        memset((void *)Graph->values, 0, sizeof(s32) * mapResolution);
+                        memset((void *)Graph->values, 0, sizeof(s32) * mapResolution); // initalise the graph values to 0
+                        // initialise the graph values_f and set values to 0.
+                        Graph_tmp = (graph_f *) malloc(sizeof(graph_f));
+                        // Graph_tmp->values = (f32 *) malloc(sizeof(f32) * mapResolution);
+                        Graph_tmp->values = (f32 *) calloc(mapResolution, sizeof(f32)); // make sure the values are set to 0
 
-                        ThreadPoolAddTask(Thread_Pool, GrabStdIn, 0);
+                        ThreadPoolAddTask(Thread_Pool, GrabStdIn, 0); // reading the graph data 
                         ThreadPoolWait(Thread_Pool);
                         fprintf(stdout, "\n");
 
@@ -858,6 +989,7 @@ MainArgs
                             exit(EXIT_FAILURE);
                         }
 
+                        /*
                         PrintStatus("Normalising graph data...");
                         {
                             normalise_graph_thread_data data[4];
@@ -866,12 +998,12 @@ MainArgs
                             data[2].mapResolution = mapResolution;
                             data[3].mapResolution = mapResolution;
 
-                            u32 nLanes = (mapResolution + 7) >> 3;
-                            u32 halfLanes = nLanes >> 1;
-                            u32 quaterLanes = halfLanes >> 1;
+                            u32 nLanes = (mapResolution + 7) >> 3; // 4096， total number of units to process, 1 unit = 8 pixels
+                            u32 halfLanes = nLanes >> 1;           // 2048   half of the total units
+                            u32 quaterLanes = halfLanes >> 1;      // 1024   quater of the total units
 
-                            data[0].nLanes = quaterLanes;
-                            data[0].start = 0;
+                            data[0].nLanes = quaterLanes;          // 1024
+                            data[0].start = 0;               
 
                             data[1].nLanes = halfLanes - data[0].nLanes;
                             data[1].start = data[0].nLanes << 3;
@@ -887,6 +1019,18 @@ MainArgs
                             ThreadPoolAddTask(Thread_Pool, NormaliseGraph_Thread, (data + 2));
                             ThreadPoolAddTask(Thread_Pool, NormaliseGraph_Thread, (data + 3));
                             ThreadPoolWait(Thread_Pool);
+                        }
+                        */
+
+                        PrintStatus("Transfer f32 to s32...");
+                        {
+                            ForLoop(mapResolution)
+                            {
+                                Graph->values[index] = (s32)(Graph_tmp->values[index]);
+                            }
+                            free(Graph_tmp->values);
+                            Graph_tmp->values = NULL; 
+                            free(Graph_tmp);
                         }
 
                         PrintStatus("Saving graph...");
@@ -909,7 +1053,8 @@ MainArgs
                             {
                                 *namePtr++ = nameBuffer[index];
                             }
-
+                            
+                            // 使用libdeflate进行压缩，然后将数据写入文件graphOutputFile
                             if (compressor && (compSize = (u32)libdeflate_deflate_compress(compressor, (const void *)graphPlusNameBuffer, graphPlusNameBufferSize, (void *)compBuffer, compBufferSize)))
                             {
                                 fwrite(graphMagic, 1, sizeof(graphMagic), graphOutputFile);
@@ -924,22 +1069,12 @@ MainArgs
                         }
                         PrintStatus("Done");
                     }
-                    else
-                    {
-                        PrintError("Error copying input file");
-                        returnCode = EXIT_FAILURE;
-                    }
                 }
                 else
                 {
                     PrintError("Could not decompress header of \'%s\'", pretextFile);
                     returnCode = EXIT_FAILURE;
                 }
-            }
-            else
-            {
-                PrintError("\'%s\' is not a pretext file", pretextFile);
-                returnCode = EXIT_FAILURE;
             }
         }
         else
