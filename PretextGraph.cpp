@@ -409,10 +409,10 @@ ProcessLine(void *in)
                         ++index )
                 {
                     /* 
-                        遍历当前bin能够cover到的所有的pixel
+                        Iterate over all the pixels covered by the current bin.
 
-                        首先计算当前bin能够cover到的第一个pixel的bp数目，然后将该值添加到graph->values中
-                        然后更新当前bin剩下的bp数目，以及当前bin能够cover到的bp数目
+                        First calculate the number of bp of the first pixel that the current bin can cover, then add the value to graph->values.
+                        Then update the number of bp's left in the current bin, and the number of bp's the current bin can cover.
                     */
                     u32 nThisBin = (u32)(Min(bp_covered_in_current_pixel, bp_left_in_this_bin)); 
                     // s32 valueToAdd = (s32)(value * nThisBin);
@@ -723,14 +723,15 @@ MainArgs
     }
 
     if (ArgCount == 2)
-    {
-        if (AreNullTerminatedStringsEqual((u08 *)ArgBuffer[1], (u08 *)"--licence"))
+    {   
+        std::string arg1(ArgBuffer[1]);
+        if (arg1.find("licen") != std::string::npos)
         {
             printf("%s\n", Licence);
             exit(EXIT_SUCCESS);
         }
 
-        if (AreNullTerminatedStringsEqual((u08 *)ArgBuffer[1], (u08 *)"--thirdparty"))
+        if (arg1.find("third") != std::string::npos)
         {
             printf("%s\n", ThirdParty);
             exit(EXIT_SUCCESS);
@@ -1023,7 +1024,8 @@ MainArgs
                         */
 
                         PrintStatus("Transfer f32 to s32...");
-                        {
+                        {   
+                            // as only the s32 values can be accepted by PretextView
                             ForLoop(mapResolution)
                             {
                                 Graph->values[index] = (s32)(Graph_tmp->values[index]);
@@ -1054,7 +1056,7 @@ MainArgs
                                 *namePtr++ = nameBuffer[index];
                             }
                             
-                            // 使用libdeflate进行压缩，然后将数据写入文件graphOutputFile
+                            // compress file by libdeflate, and write the compressed data into the file 
                             if (compressor && (compSize = (u32)libdeflate_deflate_compress(compressor, (const void *)graphPlusNameBuffer, graphPlusNameBufferSize, (void *)compBuffer, compBufferSize)))
                             {
                                 fwrite(graphMagic, 1, sizeof(graphMagic), graphOutputFile);
