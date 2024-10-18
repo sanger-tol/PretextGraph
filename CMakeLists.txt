@@ -4,6 +4,8 @@ project(PretextGraph LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 11)
 
+set(version "0.0.6")
+
 if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
     message(STATUS "No build type selected, default to Debug")
@@ -33,3 +35,4 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(PretextGraph PRIVATE DEBUG)
 endif()
 
+target_compile_definitions(PretextGraph PRIVATE PV="${version}")
