@@ -12,7 +12,13 @@ if get_option('buildtype') == 'debug'
 endif
 base_flags += ['-DPV=' + meson.project_version()]
 
-extensions = {'.avx2': ['-mavx2'], '.avx': ['-mavx'], '.sse42': ['-msse4.2'], '.sse41': ['-msse4.1']}
+extensions = {
+    # '.no_ext': [],
+    '.avx2': ['-mavx2'], 
+    '.avx': ['-mavx'], 
+    '.sse42': ['-msse4.2'], 
+    '.sse41': ['-msse4.1']
+    }
 
 foreach ext, flag : extensions
     flags = base_flags + flag
