@@ -4,7 +4,10 @@ project('PretextGraph', ['c', 'cpp'],
     version: '0.0.6'
 )
 
-deps = [dependency('threads')]
+deps = [
+    dependency('threads'), 
+    # dependency('pybind11')
+    ]
 base_flags = ['-Ofast']
 if get_option('buildtype') == 'debug'
     base_flags = ['-O0', '-g', '-DDEBUG']
@@ -12,12 +15,13 @@ if get_option('buildtype') == 'debug'
 endif
 base_flags += ['-DPV=' + meson.project_version()]
 
+# without considering SIMD, as the computation here is tiny 
 extensions = {
-    # '.no_ext': [],
-    '.avx2': ['-mavx2'], 
-    '.avx': ['-mavx'], 
-    '.sse42': ['-msse4.2'], 
-    '.sse41': ['-msse4.1']
+    '': [],
+    # '.avx2': ['-mavx2'], 
+    # '.avx': ['-mavx'], 
+    # '.sse42': ['-msse4.2'], 
+    # '.sse41': ['-msse4.1']
     }
 
 foreach ext, flag : extensions
@@ -28,4 +32,4 @@ foreach ext, flag : extensions
                 static_library('deflate_arm' + ext, 'libdeflate/lib/arm/cpu_features.c', c_args : flags, include_directories : 'libdeflate')], include_directories : 'libdeflate'), include_directories : 'libdeflate')
 endforeach
 
-test('Test', executable('PretextGraph', 'wrapper/SIMDExtensionWrapper.cpp', install : true, cpp_args : base_flags + ['-DProgramName=PretextGraph']))
+# test('Test', executable('PretextGraph', 'wrapper/SIMDExtensionWrapper.cpp', install : true, cpp_args : base_flags + ['-DProgramName=PretextGraph']))

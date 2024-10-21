@@ -37,6 +37,7 @@ SOFTWARE.
 #include <string>
 #include <atomic>
 #include <mutex>
+#include <unordered_map> // used to store the data_type_dic
 
 
 #include <stdint.h>
@@ -772,9 +773,8 @@ ThreadPoolWait(thread_pool *threadPool)
 {
     LockMutex(threadPool->threadCountLock);
     
-    while (threadPool->jobQueue.len || threadPool->numThreadsWorking)
-    {
-	WaitOnCond(threadPool->threadsAllIdle, threadPool->threadCountLock);
+    while (threadPool->jobQueue.len || threadPool->numThreadsWorking) {
+		WaitOnCond(threadPool->threadsAllIdle, threadPool->threadCountLock);
     }
     
     UnlockMutex(threadPool->threadCountLock);

@@ -98,11 +98,7 @@ Third-party software and resources used in this project, along with their respec
         WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 )thirdparty";
 
-#ifdef DEBUG
-    u32 NUM_THREADS = 1;  // define the thread used in DEBUG mode
-#else
-    u32 NUM_THREADS = 4;  // define the thread used in RELEASE mode
-#endif // DEBUG
+
 
 global_variable
 u08
@@ -193,6 +189,24 @@ Thread_Pool;
 #endif
 
 #include "LineBufferQueue.cpp"
+
+
+u32 NUM_THREADS;
+void set_num_threads() { // function to set the number of threads
+                         // something interesting happened
+                         // if set the num_threads as 1, the thread will be blocked while reading the file into line buffer
+                         // TODO solve the thread block problem 
+    printf("\n\n");
+    #ifdef DEBUG
+        NUM_THREADS = 4;  // after testing, if using 4 threads, the thread is blocked, haven't found the reason yet
+        PrintStatus("Debug mode, number of thread: %d\n", NUM_THREADS);
+    #else
+        NUM_THREADS = 4;  // define the thread used in RELEASE mode
+        PrintStatus("Release mode, number of thread: %d\n", NUM_THREADS);
+    #endif // DEBUG
+    return ;
+}
+
 
 struct
 contig
@@ -333,7 +347,15 @@ graph_f
 // thus we have to add this flag to distinguish the gap extension with the other extensions
 // if there is "gap" in the extension name, then the flag will be set as true
 // and during the ProcessLine function, the gap value will not be weighted according to the length of the bin and pixel
-bool name_of_extension_is_gap = false;
+
+// add a dictionary to store the data type
+unsigned int data_type(0);
+std::unordered_map<std::string, int> data_type_dic{  // use this data_type 
+    {"default", 0, },
+    {"repeat_density", 1},  // as this is counted in every single bin, so we need to normalise this within the bin
+    {"gap", 2},  //
+};
+
 global_variable
 graph *
 Graph;
@@ -394,11 +416,17 @@ ProcessLine(void *in)
             if (StringToInt_Check(line + 1, &value, '\n')) // get the value of the bedgraph bin
             {
                 Data_Added = 1;
-
+                u64 bin_size = bp_left_in_this_bin; // used to normalise the repeat density data
                 u32 from_pixel = (u32)(((f64)from_genome / (f64)Map_Properties->totalGenomeLength) * (f64)sizeGraphArray); // coordinate with unit of pixel
                 u32 to_pixel = (u32)(((f64)to_genome / (f64)Map_Properties->totalGenomeLength) * (f64)sizeGraphArray);
 
-                u64 bp_covered_in_current_pixel = ((u64)(from_pixel + 1) * bp_per_pixel) - from_genome; //  this is the bp covered in the current pixel
+                u64 bp_covered_in_current_pixel;
+                if ( (u64) (from_pixel + 1) * bp_per_pixel <= from_genome) {
+                    bp_covered_in_current_pixel = 0;  // because bp_per_pixel is a little bit smaller than the original value, so it can be a negtiave value, as this is an unsigned value, so it will a very large value if not set as 0
+                }
+                else {
+                    bp_covered_in_current_pixel = ((u64)(from_pixel + 1) * bp_per_pixel) - from_genome; //  this is the bp covered in the current pixel
+                }
 
                 // if (from_pixel != to_pixel) {
                 //     printf("from_pixel: %d, to_pixel: %d\n", from_pixel, to_pixel);
@@ -416,17 +444,26 @@ ProcessLine(void *in)
                     */
                     u32 nThisBin = (u32)(Min(bp_covered_in_current_pixel, bp_left_in_this_bin)); 
                     // s32 valueToAdd = (s32)(value * nThisBin);
-                    if (name_of_extension_is_gap) {
+                    if (data_type == data_type_dic["gap"]) {  // 
                         // add the value to graph->values
                         std::unique_lock<std::mutex> lock(mtx_global);
                         Graph_tmp->values[index] = Min(Max(0.f, (f32)value + Graph_tmp->values[index]), 1.0f); // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
+                        lock.unlock();
+                    }
+                    else if (data_type == data_type_dic["repeat_density"]){ // normalise the repeat density data by the length of the bin, and scale that into 0 - 100
+                        f32 valueToAdd_f = (f32)value / (f32)bin_size * (f32)nThisBin / (f32)bp_per_pixel * 100.0f; 
+                        if (valueToAdd_f > 100.f) {
+                            printf("Warning: valueToAdd_f is larger than 100: %f\n", valueToAdd_f);
+                        }
+                        std::unique_lock<std::mutex> lock(mtx_global);
+                        Graph_tmp->values[index] += valueToAdd_f; 
                         lock.unlock();
                     }
                     else {
                         f32 valueToAdd_f = (f32)value * (f32)nThisBin / (f32)bp_per_pixel;
                         // add the value to graph->values
                         std::unique_lock<std::mutex> lock(mtx_global);
-                        Graph_tmp->values[index] = valueToAdd_f; // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
+                        Graph_tmp->values[index] += valueToAdd_f; // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
                         lock.unlock();
                     }
                     // if (valueToAdd < 0) valueToAdd = s32_max;
@@ -708,7 +745,9 @@ CopyFile(void *in)
 }
 
 MainArgs
-{
+{   
+    set_num_threads();
+
     if (ArgCount == 1)
     {
         printf("\n%s\n\n", PretextGraph_Version);
@@ -748,30 +787,42 @@ MainArgs
     u32 copyBufferSize = KiloByte(256);
     copy_file_data copyFileData;
 
-    for (   u32 index = 1;
-            index < (u32)ArgCount;
-            ++index )
-    {
-        if (AreNullTerminatedStringsEqual((u08 *)ArgBuffer[index], (u08 *)"-i"))
-        {
-            ++index;
-            pretextFile = ArgBuffer[index];
+    u32 index_arg = 1;
+    while (index_arg < (u32) ArgCount) {   
+        std::string arg_tmp(ArgBuffer[index_arg]);
+        if (arg_tmp == "-i") {
+            ++index_arg;
+            if (index_arg >= (u32) ArgCount) {
+                PrintError("Input file required for key \'-i\'");
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            pretextFile = ArgBuffer[index_arg];
         }
-        else if (AreNullTerminatedStringsEqual((u08 *)ArgBuffer[index], (u08 *)"-n"))
-        {
-            ++index;
-            PushStringIntoIntArray(nameBuffer, ArrayCount(nameBuffer), (u08 *)ArgBuffer[index]);
+        else if (arg_tmp == "-n") {
+            ++index_arg;
+            if (index_arg >= (u32) ArgCount) {
+                PrintError("Extension name required for key \'-n\'");
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            PushStringIntoIntArray(nameBuffer, ArrayCount(nameBuffer), (u08 *)ArgBuffer[index_arg]);
         }
-        else if (AreNullTerminatedStringsEqual((u08 *)ArgBuffer[index], (u08 *)"-o"))
-        {
-            ++index;
-            outputFile = ArgBuffer[index];
+        else if ( arg_tmp == "-o") {
+            ++index_arg;
+            if (index_arg >= (u32) ArgCount) {
+                PrintError("Ouput file path required for key \'-o\'");
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            outputFile = ArgBuffer[index_arg];
         }
+        index_arg ++ ;
     }
 
-    if (pretextFile)
-    {
-        PrintStatus("Input file: \'%s\'", pretextFile);
+    if (pretextFile) {
+        fprintf(stdout, "[PretextGraph status] :: Pretext file: %s\n", pretextFile); 
+        // PrintStatus("Input file: \'%s\' \n", pretextFile);  // if the path of the file is too long, there can be segmentation fault
     }
     else
     {
@@ -784,12 +835,19 @@ MainArgs
     {
         PrintStatus("Graph name: \'%s\'", (char *)nameBuffer);
 
-        // update the name_of_extension_is_gap flag
+        // update the data_type flag
         std::string tmp_string((char *)nameBuffer);
-        if (tmp_string.find("gap") != std::string::npos)
-        {
-            name_of_extension_is_gap = true;
-            PrintStatus("The extension of the graph name is gap, set the name_of_extension_is_gap flag into true.");
+        if (tmp_string.find("gap") != std::string::npos) {
+            data_type = data_type_dic["gap"];
+            PrintStatus("The extension of the graph name is gap, set the data_type to %d (%s).", data_type, "gap");
+        }
+        else if (tmp_string.find("repeat_density") != std::string::npos) {
+            data_type = data_type_dic["repeat_density"];
+            PrintStatus("The extension of the graph name is repeat_density, set the data_type to %d (%s).", data_type, "repeat_density");
+        }
+        else {
+            data_type = data_type_dic["default"];
+            PrintStatus("The extension of the graph name is default, set the data_type into %d (%s).", data_type, "default");
         }
     }
     else
@@ -807,7 +865,8 @@ MainArgs
         copyBuffer = PushArray(Working_Set, u08, copyBufferSize);
         copyInFile = fopen((const char *)pretextFile, "rb");
         copyOutFile = fopen((const char *)outputFile, "wb");
-        PrintStatus("Output file: \'%s\'", outputFile);
+        // PrintStatus("Output file: \'%s\'\n", outputFile);
+        fprintf(stdout, "[PretextGraph status] :: Pretext file: %s\n", outputFile); 
     }
     else
     {
