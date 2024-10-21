@@ -31,6 +31,15 @@ SOFTWARE.
 #include <Shlobj.h>
 #endif
 
+
+// cpp includes
+#include <iostream>
+#include <string>
+#include <atomic>
+#include <mutex>
+#include <unordered_map> // used to store the data_type_dic
+
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -112,22 +121,23 @@ typedef size_t memptr;
 #define EndMain return(0)
 
 #ifndef _WIN32
-#include <pthread.h>
-#include <signal.h>
-#include <unistd.h>
+	#include <pthread.h>
+	#include <signal.h>
+	#include <unistd.h>
 #else
-#define __atomic_fetch_add(x, y, z) _InterlockedExchangeAdd(x, y)
-#define __atomic_add_fetch(x, y, z) (y + _InterlockedExchangeAdd(x, y))
-#define __sync_fetch_and_add(x, y) _InterlockedExchangeAdd(x, y)
-#define __sync_fetch_and_sub(x, y) _InterlockedExchangeAdd(x, -y)
-#define __atomic_store(x, y, z) _InterlockedCompareExchange(x, *y, *x)
+	#define __atomic_fetch_add(x, y, z) _InterlockedExchangeAdd(x, y)
+	#define __atomic_add_fetch(x, y, z) (y + _InterlockedExchangeAdd(x, y))
+	#define __sync_fetch_and_add(x, y) _InterlockedExchangeAdd(x, y)
+	#define __sync_fetch_and_sub(x, y) _InterlockedExchangeAdd(x, -y)
+	#define __atomic_store(x, y, z) _InterlockedCompareExchange(x, *y, *x)
 #endif
 
 #ifndef _WIN32
-#define ThreadFence __asm__ volatile("" ::: "memory")
+	#define ThreadFence __asm__ volatile("" ::: "memory")
 #else
-#define ThreadFence _mm_mfence()
+	#define ThreadFence _mm_mfence()
 #endif
+
 #define FenceIn(x) ThreadFence; \
 	x; \
 	ThreadFence
@@ -268,10 +278,10 @@ thread_context
 };
 
 #ifdef DEBUG
-#include <assert.h>
-#define Assert(x) assert(x)
+	#include <assert.h>
+	#define Assert(x) assert(x)
 #else
-#define Assert(x)
+	#define Assert(x)
 #endif
 
 #define KiloByte(x) 1024*x
@@ -763,9 +773,8 @@ ThreadPoolWait(thread_pool *threadPool)
 {
     LockMutex(threadPool->threadCountLock);
     
-    while (threadPool->jobQueue.len || threadPool->numThreadsWorking)
-    {
-	WaitOnCond(threadPool->threadsAllIdle, threadPool->threadCountLock);
+    while (threadPool->jobQueue.len || threadPool->numThreadsWorking) {
+		WaitOnCond(threadPool->threadsAllIdle, threadPool->threadCountLock);
     }
     
     UnlockMutex(threadPool->threadCountLock);
@@ -934,9 +943,9 @@ StringToInt_Check(u08 *string, u32 *result, u08 stringTerminator = '\0')
 
     while(--strLen > 0 && goodResult)
     {
-	*result += (u32)(*--string - '0') * pow;	
-	goodResult = (*string >= '0' && *string <= '9');
-	pow *= 10;
+		*result += (u32)(*--string - '0') * pow;	
+		goodResult = (*string >= '0' && *string <= '9');
+		pow *= 10;
     }
     
     *result += (u32)(*--string - '0') * pow;
@@ -1037,18 +1046,21 @@ PushStringIntoIntArray(u32 *intArray, u32 arrayLength, u08 *string, u08 stringTe
     u08 *stringToInt = (u08 *)intArray;
     u32 stringLength = 0;
 
+	// Copy the string into the integer array until the string terminator is reached or the integer array is full
     while (*string != stringTerminator && stringLength < (arrayLength << 2))
     {
         *(stringToInt++) = *(string++);
         ++stringLength;
     }
-
+	
+	// Pad the integer array with zeros until it is 4 byte aligned
     while (stringLength & 3)
     {
         *(stringToInt++) = 0;
         ++stringLength;
     }
 
+	// make sure the integer array is zeroed out
     for (   u32 index = (stringLength >> 2);
             index < arrayLength;
             ++index )
@@ -1056,7 +1068,7 @@ PushStringIntoIntArray(u32 *intArray, u32 arrayLength, u08 *string, u08 stringTe
         intArray[index] = 0;
     }
 
-    return(string);
+    return(string); // return the line buffer pointer
 }
 
 global_function

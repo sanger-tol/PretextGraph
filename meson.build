@@ -4,7 +4,10 @@ project('PretextGraph', ['c', 'cpp'],
     version: '0.0.6'
 )
 
-deps = [dependency('threads')]
+deps = [
+    dependency('threads'), 
+    # dependency('pybind11')
+    ]
 base_flags = ['-Ofast']
 if get_option('buildtype') == 'debug'
     base_flags = ['-O0', '-g', '-DDEBUG']
@@ -12,7 +15,13 @@ if get_option('buildtype') == 'debug'
 endif
 base_flags += ['-DPV=' + meson.project_version()]
 
-extensions = {'.avx2': ['-mavx2'], '.avx': ['-mavx'], '.sse42': ['-msse4.2'], '.sse41': ['-msse4.1']}
+extensions = {
+    # '': [],
+    '.avx2': ['-mavx2'], 
+    '.avx': ['-mavx'], 
+    '.sse42': ['-msse4.2'], 
+    '.sse41': ['-msse4.1']
+    }
 
 foreach ext, flag : extensions
     flags = base_flags + flag
