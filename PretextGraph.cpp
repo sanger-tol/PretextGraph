@@ -351,7 +351,7 @@ graph_f
 // add a dictionary to store the data type
 unsigned int data_type(0);
 std::unordered_map<std::string, int> data_type_dic{  // use this data_type 
-    {"default", 0, },
+    {"default", 0 },
     {"repeat_density", 1},  // as this is counted in every single bin, so we need to normalise this within the bin
     {"gap", 2},  //
 };

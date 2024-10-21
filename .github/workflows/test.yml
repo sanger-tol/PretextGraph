@@ -47,7 +47,7 @@ jobs:
         if [ `uname` == Darwin ]; then
           meson setup --buildtype=release --unity on builddir
         else
-          env CC=clang CXX=clang meson setup --buildtype=release --unity on builddir
+          env CC=clang CXX=clang++ meson setup --buildtype=release --unity on builddir
         fi
       
     - name: meson_compile
