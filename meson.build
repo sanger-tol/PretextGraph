@@ -1,7 +1,8 @@
 project('PretextGraph', ['c', 'cpp'],
     license: 'MIT',
     meson_version: '>=0.57.1',
-    version: '0.0.6'
+    version: '0.0.7',
+    default_options: ['buildtype=release', 'cpp_std=c++11'],
 )
 
 deps = [
