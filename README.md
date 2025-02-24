@@ -65,7 +65,8 @@ std::unordered_map<std::string, int> data_type_dic{  // use this data_type
     {"gap", 2}, 
     {"coverage", 3},
     {"coverage_avg", 4},
-    {"telomere", 5}
+    {"telomere", 5},
+    {"not_weighted", 6}
 };
 ```
 - `0`: default, just add the weighted value of every bin to the `graph->values[index]`;
@@ -74,6 +75,7 @@ std::unordered_map<std::string, int> data_type_dic{  // use this data_type
 - `3`: coverage, the weighted value of every bin is added to `graph->values[index]`
 - `4`: averaged coverage, the weighted value of every bin is added to `graph->values[index]`
 - `5`: telomere, the weighted value of every bin is added to `graph->values[index]`
+- `6`: not_weighted, if `not` and `weighted` are both contained in the extension name, then the extension will not be weighted while accumulating the value. NOTE: while the supported maximum value for the extension is `u32` which should be not more than `2^32 - 1` or there will be un-expected problem.
 
 
 # Requirments, running
