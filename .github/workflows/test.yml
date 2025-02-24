@@ -15,14 +15,14 @@ jobs:
         submodules: 'recursive'
 
 
-    - name: test
+    - name: build
       run: |
         ./install.cmake.sh  
 
     - name: test
       run: | 
         cd build_cmake
-        ctest -V
+        ctest -V 
         
 
 
