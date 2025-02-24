@@ -383,7 +383,8 @@ std::unordered_map<std::string, int> data_type_dic{  // use this data_type
     {"gap", 2}, 
     {"coverage", 3},
     {"coverage_avg", 4},
-    {"telomere", 5}
+    {"telomere", 5},
+    {"not_weighted", 6}
 };
 std::vector<std::string> data_type_name_vec  = {
     "default", 
@@ -391,7 +392,9 @@ std::vector<std::string> data_type_name_vec  = {
     "gap", 
     "coverage", 
     "coverage_avg", 
-    "telomere"};
+    "telomere", 
+    "not_weighted"
+    };
 
 global_variable
 graph *
@@ -486,7 +489,7 @@ ProcessLine(void *in)
                             printf("check pixel_id %d\n", pixel_id);
                         }
                     #endif // DEBUG
-                    if (data_type == data_type_dic["gap"]) {  // 
+                    if (data_type == data_type_dic["gap"]) {  
                         // add the value to graph->values
                         std::unique_lock<std::mutex> lock(mtx_global);
                         Graph_tmp->values[pixel_id] = Min(Max(0.f, (f32)value + Graph_tmp->values[pixel_id]), 1.0f); // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
@@ -500,6 +503,12 @@ ProcessLine(void *in)
                         }
                         std::unique_lock<std::mutex> lock(mtx_global);
                         Graph_tmp->values[pixel_id] += valueToAdd_f; 
+                        lock.unlock();
+                    }
+                    else if (data_type == data_type_dic["not_weighted"]) //https://github.com/sanger-tol/PretextGraph/issues/3
+                    {
+                        std::unique_lock<std::mutex> lock(mtx_global);
+                        Graph_tmp->values[pixel_id] += value; // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
                         lock.unlock();
                     }
                     else  // default data type, just add the value (averaged by bp_per_pixel) to the graph
@@ -984,7 +993,13 @@ MainArgs
         // update the data_type flag
         std::string tmp_string((char *)nameBuffer);
         std::transform(tmp_string.begin(), tmp_string.end(), tmp_string.begin(), ::tolower);
-        if (tmp_string.find("gap") != std::string::npos) {
+        if (
+            tmp_string.find("not") != std::string::npos &&
+            tmp_string.find("weighted") != std::string::npos )
+        {
+            data_type = data_type_dic["not_weighted"];
+        }
+        else if (tmp_string.find("gap") != std::string::npos) {
             data_type = data_type_dic["gap"];
         }
         else if (
