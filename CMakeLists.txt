@@ -1,28 +1,26 @@
 cmake_minimum_required(VERSION 3.0)
 
-project(PretextGraph LANGUAGES CXX C)
+project(
+    PretextGraph 
+    LANGUAGES CXX C
+    VERSION 0.0.8
+)
 
 set(CMAKE_CXX_STANDARD 11)
 
-set(version "0.0.6")
-
-if (NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Debug)
-    message(STATUS "No build type selected, default to Debug")
-endif()
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 link_directories(
     ${CMAKE_SOURCE_DIR}/libdeflate
 )
-add_executable(PretextGraph PretextGraph.cpp)
-
-target_include_directories(
-    PretextGraph
-    PRIVATE
+include_directories(
     wrapper
     libdeflate
+    src
+    .
 )
+add_executable(PretextGraph PretextGraph.cpp)
+target_compile_definitions( PretextGraph PRIVATE PV=${PROJECT_VERSION})
+
 
 target_link_libraries(
     PretextGraph
@@ -32,7 +30,13 @@ target_link_libraries(
 )
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "Debug version")
     target_compile_definitions(PretextGraph PRIVATE DEBUG)
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g -O0")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")
+else()
+    message(STATUS "Release version")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 endif()
 
-target_compile_definitions(PretextGraph PRIVATE PV="${version}")
