@@ -21,6 +21,7 @@ SOFTWARE.
 */
 
 #include "Header.h"
+#include "utils.h"
 
 #define String_(x) #x
 #define String(x) String_(x)
@@ -190,19 +191,19 @@ Thread_Pool;
 
 #include "LineBufferQueue.cpp"
 
+const char* debug_bedgraph_file = nullptr;  // used to debug the bedgraph file
 
 u32 NUM_THREADS;
 void set_num_threads() { // function to set the number of threads
                          // something interesting happened
                          // if set the num_threads as 1, the thread will be blocked while reading the file into line buffer
                          // TODO solve the thread block problem 
-    printf("\n\n");
     #ifdef DEBUG
         NUM_THREADS = 4;  // after testing, if using 4 threads, the thread is blocked, haven't found the reason yet
-        PrintStatus("Debug mode, number of thread: %d\n", NUM_THREADS);
+        PrintStatus("Debug mode, number of thread: %d", NUM_THREADS);
     #else
         NUM_THREADS = 4;  // define the thread used in RELEASE mode
-        PrintStatus("Release mode, number of thread: %d\n", NUM_THREADS);
+        PrintStatus("Release mode, number of thread: %d", NUM_THREADS);
     #endif // DEBUG
     return ;
 }
@@ -233,6 +234,7 @@ Map_Properties;
 
 #define Contig_Hash_Table_Size 2609
 #define Contig_Hash_Table_Seed 5506195799875623629
+
 
 global_function
 u32
@@ -343,6 +345,31 @@ graph_f
     f32 *values;
 };
 
+struct graph_debug
+{   
+public:
+    f32 *values;
+    u32 len;
+    u32 dim;
+    graph_debug(u32 len_, u32 dim_):len(len_), dim(dim_)
+    {
+        values = new f32[len * dim];
+    }
+
+    ~graph_debug()
+    {
+        delete[] values;
+    }
+
+    f32& operator()(const u32& i, const u32& j)
+    {
+        return values[i * dim + j];
+    }
+};
+
+graph_debug* Graph_debug = nullptr;
+
+
 // the gap extension is different with the coverage and repeat density extensions
 // thus we have to add this flag to distinguish the gap extension with the other extensions
 // if there is "gap" in the extension name, then the flag will be set as true
@@ -352,17 +379,27 @@ graph_f
 unsigned int data_type(0);
 std::unordered_map<std::string, int> data_type_dic{  // use this data_type 
     {"default", 0 },
-    {"repeat_density", 1},  // as this is counted in every single bin, so we need to normalise this within the bin
-    {"gap", 2},  //
+    {"repeat_density", 1},  
+    {"gap", 2}, 
+    {"coverage", 3},
+    {"coverage_avg", 4},
+    {"telomere", 5}
 };
+std::vector<std::string> data_type_name_vec  = {
+    "default", 
+    "repeat_density", 
+    "gap", 
+    "coverage", 
+    "coverage_avg", 
+    "telomere"};
 
 global_variable
 graph *
-Graph;
+Graph = nullptr;
 
 global_variable
 graph_f *
-Graph_tmp;
+Graph_tmp = nullptr;
 
 // add the mutex here to protect the graph->values while updating the values in multi-thread mode
 // before updating the graph->value calculation into f32, Ed used the atomic operation to update the values
@@ -383,7 +420,7 @@ void
 ProcessLine(void *in)
 {
     u32 sizeGraphArray = Map_Properties->textureResolution * Map_Properties->numberOfTextures1D;
-    u64 bp_per_pixel = (u64)((f64)Map_Properties->totalGenomeLength / (f64)sizeGraphArray);  // number of bps per pixel
+    f64 bp_per_pixel = ((f64)Map_Properties->totalGenomeLength / (f64)sizeGraphArray);  // NOTE: error of 0.0.7 is using u64 type of bp_per_pixel here which will cause the bp_per_pixel a little bit smaller than the real value. Thus the bp_overlap_within_this_pixel will gradually be 0 when it goes to the end of the genome.
 
     line_buffer *buffer = (line_buffer *)in; 
     u08 *line = buffer->line;
@@ -414,27 +451,27 @@ ProcessLine(void *in)
 
             u32 value;
             if (StringToInt_Check(line + 1, &value, '\n')) // get the value of the bedgraph bin
-            {
+            {   
                 Data_Added = 1;
                 u64 bin_size = bp_left_in_this_bin; // used to normalise the repeat density data
-                u32 from_pixel = (u32)(((f64)from_genome / (f64)Map_Properties->totalGenomeLength) * (f64)sizeGraphArray); // coordinate with unit of pixel
-                u32 to_pixel = (u32)(((f64)to_genome / (f64)Map_Properties->totalGenomeLength) * (f64)sizeGraphArray);
+                u32 from_pixel = (u32)((f64)from_genome / (f64)Map_Properties->totalGenomeLength * (f64)sizeGraphArray); // coordinate with unit of pixel
+                u32 to_pixel =   (u32)((f64)to_genome   / (f64)Map_Properties->totalGenomeLength * (f64)sizeGraphArray);
 
-                u64 bp_covered_in_current_pixel;
-                if ( (u64) (from_pixel + 1) * bp_per_pixel <= from_genome) {
-                    bp_covered_in_current_pixel = 0;  // because bp_per_pixel is a little bit smaller than the original value, so it can be a negtiave value, as this is an unsigned value, so it will a very large value if not set as 0
+                u64 bp_left_in_current_pixel;
+                if ( (u64) ((from_pixel + 1) * bp_per_pixel) <= from_genome) {
+                    bp_left_in_current_pixel = 0;  // because bp_per_pixel is a little bit smaller than the original value, so it can be a negtiave value, as this is an unsigned value, so it will a very large value if not set as 0
                 }
                 else {
-                    bp_covered_in_current_pixel = ((u64)(from_pixel + 1) * bp_per_pixel) - from_genome; //  this is the bp covered in the current pixel
+                    bp_left_in_current_pixel = ((u64)((from_pixel + 1) * bp_per_pixel)) - from_genome; //  this is the bp covered in the current pixel
                 }
 
                 // if (from_pixel != to_pixel) {
                 //     printf("from_pixel: %d, to_pixel: %d\n", from_pixel, to_pixel);
                 // }
 
-                for (   u32 index = from_pixel;
-                        index <= to_pixel && index < sizeGraphArray;
-                        ++index )
+                for (   u32 pixel_id = from_pixel;
+                        pixel_id <= to_pixel && pixel_id < sizeGraphArray;
+                        ++pixel_id )
                 {
                     /* 
                         Iterate over all the pixels covered by the current bin.
@@ -442,30 +479,47 @@ ProcessLine(void *in)
                         First calculate the number of bp of the first pixel that the current bin can cover, then add the value to graph->values.
                         Then update the number of bp's left in the current bin, and the number of bp's the current bin can cover.
                     */
-                    u32 nThisBin = (u32)(Min(bp_covered_in_current_pixel, bp_left_in_this_bin)); 
-                    // s32 valueToAdd = (s32)(value * nThisBin);
+                    u32 bp_overlap_within_this_pixel = (u32)(Min(bp_left_in_current_pixel, bp_left_in_this_bin)); 
+                    #ifdef DEBUG
+                        if (bp_overlap_within_this_pixel < 100 && pixel_id > 15000 && data_type == data_type_dic["repeat_density"])
+                        {
+                            printf("check pixel_id %d\n", pixel_id);
+                        }
+                    #endif // DEBUG
                     if (data_type == data_type_dic["gap"]) {  // 
                         // add the value to graph->values
                         std::unique_lock<std::mutex> lock(mtx_global);
-                        Graph_tmp->values[index] = Min(Max(0.f, (f32)value + Graph_tmp->values[index]), 1.0f); // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
+                        Graph_tmp->values[pixel_id] = Min(Max(0.f, (f32)value + Graph_tmp->values[pixel_id]), 1.0f); // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
                         lock.unlock();
                     }
-                    else if (data_type == data_type_dic["repeat_density"]){ // normalise the repeat density data by the length of the bin, and scale that into 0 - 100
-                        f32 valueToAdd_f = (f32)value / (f32)bin_size * (f32)nThisBin / (f32)bp_per_pixel * 100.0f; 
+                    else if (data_type == data_type_dic["repeat_density"]) // normalise the repeat density data by the length of the bin
+                    { 
+                        f32 valueToAdd_f = (f32)value * (f32)bp_overlap_within_this_pixel / (f32)bp_per_pixel / (f32)bin_size  * 100.0f; 
                         if (valueToAdd_f > 100.f) {
                             printf("Warning: valueToAdd_f is larger than 100: %f\n", valueToAdd_f);
                         }
                         std::unique_lock<std::mutex> lock(mtx_global);
-                        Graph_tmp->values[index] += valueToAdd_f; 
+                        Graph_tmp->values[pixel_id] += valueToAdd_f; 
                         lock.unlock();
                     }
-                    else {
-                        f32 valueToAdd_f = (f32)value * (f32)nThisBin / (f32)bp_per_pixel;
+                    else  // default data type, just add the value (averaged by bp_per_pixel) to the graph
+                    {
+                        f32 valueToAdd_f = (f32)value * (f32)bp_overlap_within_this_pixel / (f32)bp_per_pixel; 
                         // add the value to graph->values
                         std::unique_lock<std::mutex> lock(mtx_global);
-                        Graph_tmp->values[index] += valueToAdd_f; // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
+                        Graph_tmp->values[pixel_id] += valueToAdd_f; // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
                         lock.unlock();
                     }
+                    #ifdef DEBUG
+                        if (Graph_tmp->values[pixel_id] > 300.f) 
+                        {
+                            printf("Warning: Graph_tmp->values[%d] is larger than 300: %f\n", pixel_id, Graph_tmp->values[pixel_id]);
+                        }
+                        (*Graph_debug)(pixel_id, 0) = Graph_tmp->values[pixel_id];
+                        (*Graph_debug)(pixel_id, 1) = value;
+                        (*Graph_debug)(pixel_id, 2) = bp_overlap_within_this_pixel;
+                        (*Graph_debug)(pixel_id, 3) = bp_per_pixel;
+                    #endif // DEBUG
                     // if (valueToAdd < 0) valueToAdd = s32_max;
 
                     // s32 oldValue = __atomic_fetch_add(Graph->values + index, valueToAdd, 0);
@@ -476,8 +530,8 @@ ProcessLine(void *in)
                     //     __atomic_store(Graph->values + index, &cap, 0);
                     // }
 
-                    bp_left_in_this_bin -= (u64)nThisBin;
-                    bp_covered_in_current_pixel = bp_per_pixel;
+                    bp_left_in_this_bin -= (u64)bp_overlap_within_this_pixel;
+                    bp_left_in_current_pixel = (u64)bp_per_pixel;
                 }
 
                 if (!(__atomic_add_fetch(&Number_of_Lines_Read, 1, 0) & ((Pow2(Number_of_Lines_Print_Status_Every_Log2)) - 1)))
@@ -646,16 +700,15 @@ GrabStdIn()
     u32 bufferPtr = 0;
 
     read_pool *readPool = CreateReadPool(&Working_Set);
-    readPool->handle = STDIN_FILENO; // read from stdin
+    // readPool->handle = STDIN_FILENO; // read from stdin
 
-// old version used to debug
-//     readPool->handle =
-// // #ifdef DEBUG
-// //         open("data_for_test/repeat_density.bedgraph", O_RDONLY);
-// // #else
-// //     STDIN_FILENO;
-// // #endif
-//     STDIN_FILENO; // read from stdin while running
+// used to debug
+    readPool->handle =
+#ifdef DEBUG
+        open((char*)debug_bedgraph_file, O_RDONLY);
+#else
+    STDIN_FILENO;
+#endif // DEBUG
 
     u08 line[KiloByte(16)];
     u32 linePtr = 0;
@@ -744,16 +797,52 @@ CopyFile(void *in)
     }
 }
 
+
+void output_graph_tmp()
+{   
+    #ifndef DEBUG
+        std::cerr << "output_graph_tmp: not in debug mode, will skip the output function!\n";
+        return; 
+    #endif // DEBUG
+    std::stringstream filename;
+    filename << "data_for_test/graph_tmp_" << data_type_name_vec[data_type] << ".txt";
+    PrintStatus("Output the graph_tmp values into file: %s\n", filename.str().c_str());
+    std::ofstream output_stream(filename.str());
+    for (u32 i = 0; i <  Map_Properties->textureResolution * Map_Properties->numberOfTextures1D; ++i) {
+        output_stream 
+            << (*Graph_debug)(i, 0) <<  "\t " 
+            << (*Graph_debug)(i, 1) <<  "\t " 
+            << (*Graph_debug)(i, 2) <<  "\t " 
+            << (*Graph_debug)(i, 3) << std::endl;
+    }
+    output_stream.close();
+    return;
+}
+
+
 MainArgs
 {   
-    set_num_threads();
+    #ifdef DEBUG
+        printf("\n");
+        for (u32 i = 0; i < argc; i++ )
+        {
+            printf("argv[%d]: %s\n", i, argv[i]);
+        }
+        printf("\n");
+    #endif // DEBUG
 
-    if (ArgCount == 1)
-    {
+
+    if (ArgCount == 1 || std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")
+    {   
+        printf("Usage is not correct, please check the usage below:\n");
         printf("\n%s\n\n", PretextGraph_Version);
-
         printf(R"help(  (...bedgraph format |) PretextGraph -i input.pretext -n "graph name"
-                                        (-o output.pretext)
+                                        [-o output.pretext]
+                                        [-nf 0|1] (0: disable NOISE FILTER, 1: enable NOISE FILTER, (default: 1))
+                                        [-f debug.bedgraph] (debug bedgraph file)
+                                        [--help | -h] (view help)
+                                        [--licence] (view software licence)
+                                        [--thirdparty] (view third party software used)
   (< bedgraph format))help");
 
         printf("\n\nPretextGraph --licence    <- view software licence\n");
@@ -761,6 +850,7 @@ MainArgs
         exit(EXIT_SUCCESS);
     }
 
+    set_num_threads();
     if (ArgCount == 2)
     {   
         std::string arg1(ArgBuffer[1]);
@@ -786,6 +876,7 @@ MainArgs
     FILE *copyOutFile = 0;
     u32 copyBufferSize = KiloByte(256);
     copy_file_data copyFileData;
+    bool NOISE_FILTER = true;
 
     u32 index_arg = 1;
     while (index_arg < (u32) ArgCount) {   
@@ -817,8 +908,54 @@ MainArgs
             }
             outputFile = ArgBuffer[index_arg];
         }
+        else if (arg_tmp == "-f")
+        {
+            ++index_arg;
+            if (index_arg >= (u32) ArgCount) {
+                PrintError("Debug bedgraph file path required for key \'-f\'");
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            debug_bedgraph_file = ArgBuffer[index_arg];
+        }
+        else if (arg_tmp == "-nf")
+        {
+            ++index_arg;
+            if (index_arg >= (u32) ArgCount) {
+                PrintError("Noise filter flag required for key \'-n\'");
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            if (std::string(ArgBuffer[index_arg]) == "0")
+            {
+                NOISE_FILTER = false;
+            }
+            else if (std::string(ArgBuffer[index_arg]) == "1")
+            {
+                NOISE_FILTER = true;
+            }
+            else
+            {
+                PrintError("Invalid noise filter flag: (%s), 0: disable NOISE FILTER, 1: enable NOISE FILTER, (default: 1).\n", ArgBuffer[index_arg]);
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+        }
         index_arg ++ ;
     }
+
+    #ifdef DEBUG
+        if (debug_bedgraph_file) 
+        {
+            fprintf(stdout, "[PretextGraph status] :: Debug bedgraph file: %s\n", debug_bedgraph_file);
+        }
+        else 
+        {
+            PrintError("Debug bedgraph file required");
+            returnCode = EXIT_FAILURE;
+            goto end;
+        }
+    #endif // DEBUG
 
     if (pretextFile) {
         fprintf(stdout, "[PretextGraph status] :: Pretext file: %s\n", pretextFile); 
@@ -831,24 +968,50 @@ MainArgs
         goto end;
     }
 
+    if (NOISE_FILTER)
+    {
+        PrintStatus("Noise filter is enabled");
+    }
+    else 
+    {
+        PrintStatus("Noise filter is disabled");
+    }
+
     if (nameBuffer[0])
     {
         PrintStatus("Graph name: \'%s\'", (char *)nameBuffer);
 
         // update the data_type flag
         std::string tmp_string((char *)nameBuffer);
+        std::transform(tmp_string.begin(), tmp_string.end(), tmp_string.begin(), ::tolower);
         if (tmp_string.find("gap") != std::string::npos) {
             data_type = data_type_dic["gap"];
-            PrintStatus("The extension of the graph name is gap, set the data_type to %d (%s).", data_type, "gap");
         }
-        else if (tmp_string.find("repeat_density") != std::string::npos) {
+        else if (
+            tmp_string.find("repeat") != std::string::npos &&
+            tmp_string.find("density") != std::string::npos) {
             data_type = data_type_dic["repeat_density"];
-            PrintStatus("The extension of the graph name is repeat_density, set the data_type to %d (%s).", data_type, "repeat_density");
+        }
+        else if (tmp_string.find("coverage") != std::string::npos)
+        {
+            if (tmp_string.find("avg") == std::string::npos)
+            {
+                data_type = data_type_dic["coverage"];
+            }
+            else
+            {
+                data_type = data_type_dic["coverage_avg"];
+            }
+        }
+        else if (tmp_string.find("telomere") != std::string::npos)
+        {
+            data_type = data_type_dic["telomere"];
         }
         else {
-            data_type = data_type_dic["default"];
-            PrintStatus("The extension of the graph name is default, set the data_type into %d (%s).", data_type, "default");
+            data_type = data_type_dic["telomere"];
         }
+
+        PrintStatus("Extension type: %s (%d).", data_type_name_vec[data_type].c_str(),  data_type);
     }
     else
     {
@@ -866,7 +1029,7 @@ MainArgs
         copyInFile = fopen((const char *)pretextFile, "rb");
         copyOutFile = fopen((const char *)outputFile, "wb");
         // PrintStatus("Output file: \'%s\'\n", outputFile);
-        fprintf(stdout, "[PretextGraph status] :: Pretext file: %s\n", outputFile); 
+        fprintf(stdout, "[PretextGraph status] :: Output Pretext file: %s\n", outputFile); 
     }
     else
     {
@@ -1016,8 +1179,6 @@ MainArgs
                             InsertContigIntoHashTable(index, GetHashedContigName(Map_Properties->contigs + index));
                         }
 
-                        PrintStatus("File read");
-
                         Line_Buffer_Queue = PushStruct(Working_Set, line_buffer_queue);
                         InitialiseLineBufferQueue(&Working_Set, Line_Buffer_Queue);
 
@@ -1033,13 +1194,16 @@ MainArgs
 #pragma clang diagnostic pop                      
                         memset((void *)Graph->values, 0, sizeof(s32) * mapResolution); // initalise the graph values to 0
                         // initialise the graph values_f and set values to 0.
-                        Graph_tmp = (graph_f *) malloc(sizeof(graph_f));
-                        // Graph_tmp->values = (f32 *) malloc(sizeof(f32) * mapResolution);
-                        Graph_tmp->values = (f32 *) calloc(mapResolution, sizeof(f32)); // make sure the values are set to 0
+                        Graph_tmp = new graph_f();
+                        Graph_tmp->values = new f32[mapResolution]; 
+                        #ifdef DEBUG
+                            Graph_debug = new graph_debug(mapResolution, 4);
+                        #endif // DEBUG 
+                        for (u32 i = 0; i < mapResolution; i++) Graph_tmp->values[i] = 0;
 
                         ThreadPoolAddTask(Thread_Pool, GrabStdIn, 0); // reading the graph data 
+
                         ThreadPoolWait(Thread_Pool);
-                        fprintf(stdout, "\n");
 
                         if (Global_Error_Flag) exit(EXIT_FAILURE);
 
@@ -1084,14 +1248,38 @@ MainArgs
 
                         PrintStatus("Transfer f32 to s32...");
                         {   
+
+                            // Noise filter
+                            if (
+                                /*
+                                {"default", 0 },
+                                {"repeat_density", 1},  
+                                {"gap", 2}, 
+                                {"coverage", 3},
+                                {"coverage_avg", 4},
+                                {"telomere", 5}
+                                */
+                                NOISE_FILTER && 
+                                (
+                                    data_type == data_type_dic["coverage"] ||
+                                    data_type == data_type_dic["repeat_density"])
+                            ) 
+                            {   
+                                PrintStatus("Noise filter: applied.");
+                                f32 medium_value = find_medium(Graph_tmp->values, mapResolution);
+                                apply_noise_filter_vec(Graph_tmp->values, mapResolution, medium_value);
+                            }
+
                             // as only the s32 values can be accepted by PretextView
                             ForLoop(mapResolution)
                             {
                                 Graph->values[index] = (s32)(Graph_tmp->values[index]);
                             }
-                            free(Graph_tmp->values);
-                            Graph_tmp->values = NULL; 
-                            free(Graph_tmp);
+                            #ifdef DEBUG
+                                output_graph_tmp(); // for check
+                            #endif
+                            delete[] Graph_tmp->values;
+                            delete Graph_tmp;
                         }
 
                         PrintStatus("Saving graph...");
@@ -1128,7 +1316,7 @@ MainArgs
                                 returnCode = EXIT_FAILURE;
                             }
                         }
-                        PrintStatus("Done");
+                        PrintStatus("Done\n\n");
                     }
                 }
                 else

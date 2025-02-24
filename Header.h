@@ -35,10 +35,13 @@ SOFTWARE.
 // cpp includes
 #include <iostream>
 #include <string>
+#include <fstream>
+#include <sstream>
+#include <vector>
 #include <atomic>
 #include <mutex>
 #include <unordered_map> // used to store the data_type_dic
-
+#include <algorithm>
 
 #include <stdint.h>
 #include <stdlib.h>
