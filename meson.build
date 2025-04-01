@@ -1,7 +1,7 @@
 project('PretextGraph', ['c', 'cpp'],
     license: 'MIT',
     meson_version: '>=0.57.1',
-    version: '0.0.8',
+    version: '0.0.9',
     default_options: ['buildtype=release', 'cpp_std=c++11'],
 )
 
@@ -32,4 +32,4 @@ foreach ext, flag : extensions
                 static_library('deflate_arm' + ext, 'libdeflate/lib/arm/cpu_features.c', c_args : flags, include_directories : 'libdeflate')], include_directories : 'libdeflate'), include_directories : [ 'libdeflate', 'src' ])
 endforeach
 
-test('Test', executable('PretextGraph', 'wrapper/SIMDExtensionWrapper.cpp', install : true, cpp_args : base_flags + ['-DProgramName=PretextGraph']))
+test('Test', executable('PretextGraph', 'SIMDExtensionWrapper.cpp', install : true, cpp_args : base_flags + ['-DProgramName=PretextGraph']))
