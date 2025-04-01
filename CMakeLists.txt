@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(
     PretextGraph 
     LANGUAGES CXX C
-    VERSION 0.0.8
+    VERSION 0.0.9
 )
 
 add_compile_definitions(PV="${PROJECT_VERSION}")
@@ -14,7 +14,6 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 include_directories(
-    ${CMAKE_SOURCE_DIR}/wrapper
     ${CMAKE_SOURCE_DIR}/libdeflate
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/.
@@ -59,10 +58,34 @@ endforeach()
 
 # ==== SIMD test ====
 add_executable(PretextGraph
-    wrapper/SIMDExtensionWrapper.cpp
+    SIMDExtensionWrapper.cpp
 )
 target_compile_definitions(PretextGraph PRIVATE ProgramName="PretextGraph")
 
 include(CTest)
 enable_testing()
 add_test(NAME TEST COMMAND "PretextGraph")
+
+# ==== Pack ====
+
+
+set(CPACK_SOURCE_GENERATOR "TGZ")
+set(CPACK_SOURCE_IGNORE_FILES
+  ".*/build_cmake/;"
+  ".*/builddir/;"
+  ".*/data_for_test/;"
+  ".*/logs/;"
+  ".*/test_py/;"
+  ".*/pretext_test$;"
+  ".*/PretextGraph$;"
+  ".*/test$;"
+  "/\\\\.git/;"
+  "/\\\\.vscode/;"
+  "\\\\.swp$;"
+  "\\\\.user$;"
+  "\\\\.DS_Store$;"
+)
+message(STATUS "CPack ignored files: ${CPACK_SOURCE_IGNORE_FILES}")
+include(CPack)
+
+

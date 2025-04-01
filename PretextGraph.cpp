@@ -450,22 +450,20 @@ ProcessLine(void *in)
             while (*++line != '\t') ++len;
             u64 to_genome = (u64)StringToInt(line, len) + prevLength_genome;
 
-            u64 bp_left_in_this_bin = to_genome - from_genome;
+            f64 bp_left_in_this_bin = (f64) (to_genome - from_genome);
 
             u32 value;
             if (StringToInt_Check(line + 1, &value, '\n')) // get the value of the bedgraph bin
             {   
                 Data_Added = 1;
-                u64 bin_size = bp_left_in_this_bin; // used to normalise the repeat density data
-                u32 from_pixel = (u32)((f64)from_genome / (f64)Map_Properties->totalGenomeLength * (f64)sizeGraphArray); // coordinate with unit of pixel
-                u32 to_pixel =   (u32)((f64)to_genome   / (f64)Map_Properties->totalGenomeLength * (f64)sizeGraphArray);
+                u32 from_pixel = (u32)((f64)from_genome / bp_per_pixel); // coordinate with unit of pixel
+                u32 to_pixel =   (u32)((f64)to_genome   / bp_per_pixel);
 
-                u64 bp_left_in_current_pixel;
-                if ( (u64) ((from_pixel + 1) * bp_per_pixel) <= from_genome) {
-                    bp_left_in_current_pixel = 0;  // because bp_per_pixel is a little bit smaller than the original value, so it can be a negtiave value, as this is an unsigned value, so it will a very large value if not set as 0
-                }
-                else {
-                    bp_left_in_current_pixel = ((u64)((from_pixel + 1) * bp_per_pixel)) - from_genome; //  this is the bp covered in the current pixel
+                f64 bp_left_in_current_pixel = (f64)(from_pixel + 1) * bp_per_pixel - (f64)from_genome;
+                if (bp_left_in_current_pixel < 0)
+                {
+                    printf("Error: bp_left_in_current_pixel(%f) < 0. \n", bp_left_in_current_pixel);
+                    Assert(0);
                 }
 
                 // if (from_pixel != to_pixel) {
@@ -482,13 +480,8 @@ ProcessLine(void *in)
                         First calculate the number of bp of the first pixel that the current bin can cover, then add the value to graph->values.
                         Then update the number of bp's left in the current bin, and the number of bp's the current bin can cover.
                     */
-                    u32 bp_overlap_within_this_pixel = (u32)(Min(bp_left_in_current_pixel, bp_left_in_this_bin)); 
-                    #ifdef DEBUG
-                        if (bp_overlap_within_this_pixel < 100 && pixel_id > 15000 && data_type == data_type_dic["repeat_density"])
-                        {
-                            printf("check pixel_id %d\n", pixel_id);
-                        }
-                    #endif // DEBUG
+
+                    f64 bp_overlap_within_this_pixel = std::min(bp_left_in_current_pixel, bp_left_in_this_bin); 
                     if (data_type == data_type_dic["gap"]) {  
                         // add the value to graph->values
                         std::unique_lock<std::mutex> lock(mtx_global);
@@ -497,10 +490,8 @@ ProcessLine(void *in)
                     }
                     else if (data_type == data_type_dic["repeat_density"]) // normalise the repeat density data by the length of the bin
                     { 
-                        f32 valueToAdd_f = (f32)value * (f32)bp_overlap_within_this_pixel / (f32)bp_per_pixel / (f32)bin_size  * 100.0f; 
-                        if (valueToAdd_f > 100.f) {
-                            printf("Warning: valueToAdd_f is larger than 100: %f\n", valueToAdd_f);
-                        }
+                        f32 valueToAdd_f = (f32)value * (f32)bp_overlap_within_this_pixel / (f32)bp_per_pixel; 
+                        
                         std::unique_lock<std::mutex> lock(mtx_global);
                         Graph_tmp->values[pixel_id] += valueToAdd_f; 
                         lock.unlock();
@@ -518,14 +509,11 @@ ProcessLine(void *in)
                         std::unique_lock<std::mutex> lock(mtx_global);
                         Graph_tmp->values[pixel_id] += valueToAdd_f; // if set the value vector as f32 array, then we can not use the atomic operation. If mutil-thread is used, then we have to use the mutex to protect the values
                         lock.unlock();
+
                     }
                     #ifdef DEBUG
-                        if (Graph_tmp->values[pixel_id] > 300.f) 
-                        {
-                            printf("Warning: Graph_tmp->values[%d] is larger than 300: %f\n", pixel_id, Graph_tmp->values[pixel_id]);
-                        }
-                        (*Graph_debug)(pixel_id, 0) = Graph_tmp->values[pixel_id];
-                        (*Graph_debug)(pixel_id, 1) = value;
+                        (*Graph_debug)(pixel_id, 0) = Graph_tmp->values[pixel_id]; // value at the pixel
+                        (*Graph_debug)(pixel_id, 1) = value;  // original value without processing
                         (*Graph_debug)(pixel_id, 2) = bp_overlap_within_this_pixel;
                         (*Graph_debug)(pixel_id, 3) = bp_per_pixel;
                     #endif // DEBUG
@@ -539,8 +527,8 @@ ProcessLine(void *in)
                     //     __atomic_store(Graph->values + index, &cap, 0);
                     // }
 
-                    bp_left_in_this_bin -= (u64)bp_overlap_within_this_pixel;
-                    bp_left_in_current_pixel = (u64)bp_per_pixel;
+                    bp_left_in_this_bin -= bp_overlap_within_this_pixel;
+                    bp_left_in_current_pixel = bp_per_pixel;
                 }
 
                 if (!(__atomic_add_fetch(&Number_of_Lines_Read, 1, 0) & ((Pow2(Number_of_Lines_Print_Status_Every_Log2)) - 1)))
@@ -712,12 +700,7 @@ GrabStdIn()
     // readPool->handle = STDIN_FILENO; // read from stdin
 
 // used to debug
-    readPool->handle =
-#ifdef DEBUG
-        open((char*)debug_bedgraph_file, O_RDONLY);
-#else
-    STDIN_FILENO;
-#endif // DEBUG
+    readPool->handle = debug_bedgraph_file? open((char*)debug_bedgraph_file, O_RDONLY) : STDIN_FILENO;
 
     u08 line[KiloByte(16)];
     u32 linePtr = 0;
@@ -809,10 +792,6 @@ CopyFile(void *in)
 
 void output_graph_tmp()
 {   
-    #ifndef DEBUG
-        std::cerr << "output_graph_tmp: not in debug mode, will skip the output function!\n";
-        return; 
-    #endif // DEBUG
     std::stringstream filename;
     filename << "data_for_test/graph_tmp_" << data_type_name_vec[data_type] << ".txt";
     PrintStatus("Output the graph_tmp values into file: %s\n", filename.str().c_str());
@@ -921,7 +900,7 @@ MainArgs
         {
             ++index_arg;
             if (index_arg >= (u32) ArgCount) {
-                PrintError("Debug bedgraph file path required for key \'-f\'");
+                PrintError("bedgraph file path required for key \'-f\'");
                 returnCode = EXIT_FAILURE;
                 goto end;
             }
@@ -953,18 +932,14 @@ MainArgs
         index_arg ++ ;
     }
 
-    #ifdef DEBUG
         if (debug_bedgraph_file) 
         {
-            fprintf(stdout, "[PretextGraph status] :: Debug bedgraph file: %s\n", debug_bedgraph_file);
+            fprintf(stdout, "[PretextGraph status] :: bedgraph file: %s\n", debug_bedgraph_file);
         }
         else 
         {
-            PrintError("Debug bedgraph file required");
-            returnCode = EXIT_FAILURE;
-            goto end;
+            fprintf(stdout, "[PretextGraph status] :: bedgraph file: not specified, read from STDIN_FILENO\n");
         }
-    #endif // DEBUG
 
     if (pretextFile) {
         fprintf(stdout, "[PretextGraph status] :: Pretext file: %s\n", pretextFile); 
@@ -1261,6 +1236,11 @@ MainArgs
                         }
                         */
 
+                        #ifdef DEBUG
+                            output_graph_tmp(); // for check
+                            delete Graph_debug;
+                        #endif
+
                         PrintStatus("Transfer f32 to s32...");
                         {   
 
@@ -1287,12 +1267,15 @@ MainArgs
 
                             // as only the s32 values can be accepted by PretextView
                             ForLoop(mapResolution)
-                            {
+                            {   
+                                if ((s32)Graph_tmp->values[index] > std::numeric_limits<s32>::max()) 
+                                {   
+                                    fprintf(stderr, 
+                                        "Error: Graph_tmp->values[%d] = (%f) > s32_max(%d)\n", index, Graph_tmp->values[index], std::numeric_limits<s32>::max());
+                                    Assert(0);
+                                }
                                 Graph->values[index] = (s32)(Graph_tmp->values[index]);
                             }
-                            #ifdef DEBUG
-                                output_graph_tmp(); // for check
-                            #endif
                             delete[] Graph_tmp->values;
                             delete Graph_tmp;
                         }
