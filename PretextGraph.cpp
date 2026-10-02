@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2021 Ed Harry, Wellcome Sanger Institute
+Copyright (c) 2026 Genome Research Ltd.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -22,15 +22,18 @@ SOFTWARE.
 
 #include "Header.h"
 #include "utils.h"
+#include "file_type.h"
+#include "bigwig.h"
+#include <map>
 
 #define String_(x) #x
 #define String(x) String_(x)
-#define PretextGraph_Version "PretextMap Version " String(PV)
+#define PretextGraph_Version "PretextGraph Version " String(PV)
 
 global_variable
 u08
 Licence[] = R"lic(
-Copyright (c) 2019 Ed Harry, Wellcome Sanger Institute
+Copyright (c) 2026 Genome Research Ltd.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -412,6 +415,51 @@ global_variable
 volatile u08
 Data_Added = 0;
 
+// Set only when the fourth column is a non-negative integer, so a numeric
+// bedgraph still saves a single extension under the -n name.
+global_variable
+volatile u08
+Integer_Data_Added = 0;
+
+// Fourth-column labels share the -n track. Each label is one positive value.
+std::mutex mtx_groups;
+std::unordered_map<std::string, u32> Group_Ids;
+f64 *Group_Overlap = 0;
+
+global_variable
+volatile u08
+Group_Data_Added = 0;
+
+global_function
+u32
+IsBedgraphLabel(const u08 *text, u32 length)
+{
+    if (!length || length >= 64) return 0;
+
+    for (u32 i = 0; i < length; ++i)
+    {
+        u08 c = text[i];
+        if (c <= ' ' || c == 127) return 0;
+    }
+
+    return 1;
+}
+
+global_function
+u32
+GroupIdFor(const char *label)
+{
+    std::lock_guard<std::mutex> lock(mtx_groups);
+
+    std::string key(label);
+    std::unordered_map<std::string, u32>::iterator found = Group_Ids.find(key);
+    if (found != Group_Ids.end()) return found->second;
+
+    u32 id = (u32)Group_Ids.size() + 1;
+    Group_Ids.emplace(key, id);
+    return id;
+}
+
 global_variable
 threadSig
 Number_of_Lines_Read = 0;
@@ -456,6 +504,7 @@ ProcessLine(void *in)
             if (StringToInt_Check(line + 1, &value, '\n')) // get the value of the bedgraph bin
             {   
                 Data_Added = 1;
+                Integer_Data_Added = 1;
                 u32 from_pixel = (u32)((f64)from_genome / bp_per_pixel); // coordinate with unit of pixel
                 u32 to_pixel =   (u32)((f64)to_genome   / bp_per_pixel);
 
@@ -545,11 +594,72 @@ ProcessLine(void *in)
             }
             else
             {
-                u32 tmp = 0;
-                while (line[++tmp] != '\n') {}
-                line[tmp] = 0;
-                PrintWarning("Invalid bedgraph integer data: '%s'", line + 1);
-                line[tmp] = '\n';
+                // Fourth column is a label. All labels share the -n track.
+                // The pixel stores the group id, so PretextView colours by group.
+                u32 fieldEnd = 0;
+                while (line[++fieldEnd] != '\n') {}
+
+                u32 start = 1;
+                u32 end = fieldEnd;
+                while (start < end && (line[start] == ' ' || line[start] == '\t')) ++start;
+                while (end > start && (line[end - 1] == ' ' || line[end - 1] == '\t' || line[end - 1] == '\r')) --end;
+
+                u32 labelLength = end - start;
+                char label[64];
+                if (IsBedgraphLabel(line + start, labelLength))
+                {
+                    for (u32 i = 0; i < labelLength; ++i) label[i] = (char)line[start + i];
+                    label[labelLength] = 0;
+
+                    Data_Added = 1;
+                    Group_Data_Added = 1;
+                    u32 groupId = GroupIdFor(label);
+                    u32 from_pixel = (u32)((f64)from_genome / bp_per_pixel);
+                    u32 to_pixel = (u32)((f64)to_genome / bp_per_pixel);
+
+                    f64 bp_left_in_current_pixel = (f64)(from_pixel + 1) * bp_per_pixel - (f64)from_genome;
+                    if (bp_left_in_current_pixel < 0)
+                    {
+                        printf("Error: bp_left_in_current_pixel(%f) < 0. \n", bp_left_in_current_pixel);
+                        Assert(0);
+                    }
+
+                    {
+                        std::unique_lock<std::mutex> lock(mtx_global);
+                        for (   u32 pixel_id = from_pixel;
+                                pixel_id <= to_pixel && pixel_id < sizeGraphArray;
+                                ++pixel_id )
+                        {
+                            f64 bp_overlap_within_this_pixel = std::min(bp_left_in_current_pixel, bp_left_in_this_bin);
+                            if (bp_overlap_within_this_pixel > Group_Overlap[pixel_id])
+                            {
+                                Group_Overlap[pixel_id] = bp_overlap_within_this_pixel;
+                                Graph_tmp->values[pixel_id] = (f32)groupId;
+                            }
+
+                            bp_left_in_this_bin -= bp_overlap_within_this_pixel;
+                            bp_left_in_current_pixel = bp_per_pixel;
+                        }
+                    }
+
+                    if (!(__atomic_add_fetch(&Number_of_Lines_Read, 1, 0) & ((Pow2(Number_of_Lines_Print_Status_Every_Log2)) - 1)))
+                    {
+                        char buff[128];
+                        memset((void *)buff, ' ', 80);
+                        buff[80] = 0;
+                        printf("\r%s", buff);
+
+                        stbsp_snprintf(buff, sizeof(buff), "\r[PretextGraph status] :: %$d bedgraph lines read", Number_of_Lines_Read);
+                        fprintf(stdout, "%s", buff);
+                        fflush(stdout);
+                    }
+                }
+                else
+                {
+                    line[fieldEnd] = 0;
+                    PrintWarning("Invalid bedgraph integer data: '%s'", line + 1);
+                    line[fieldEnd] = '\n';
+                }
             }
         }
         else
@@ -665,6 +775,77 @@ CreateReadPool(memory_arena *arena)
     return(pool);
 }
 
+global_variable
+read_pool *
+Read_Pool = 0;
+
+global_variable
+s32
+Bedgraph_Child = 0;
+
+// Bedgraph is read directly. bigWig is converted on the fly by bigWigToBedGraph.
+global_function
+s32
+OpenTrackFile(const char *path)
+{
+    Bedgraph_Child = 0;
+    if (!path) return STDIN_FILENO;
+
+    if (TrackFileTypeFromPath(path) == TRACK_FILE_BIGWIG)
+    {
+        bigwig_source source = OpenBigWigAsBedgraph(path);
+        if (source.openResult == BIGWIG_PIPE_FAILED)
+        {
+            PrintError("Could not create a pipe for '%s'", path);
+            return -1;
+        }
+        if (source.openResult == BIGWIG_FORK_FAILED)
+        {
+            PrintError("Could not start bigWigToBedGraph for '%s'", path);
+            return -1;
+        }
+        if (source.openResult == BIGWIG_UNSUPPORTED)
+        {
+            PrintError("bigWig input is not supported on Windows ('%s'). Convert it to bedgraph first.", path);
+            return -1;
+        }
+
+        Bedgraph_Child = source.childPid;
+        PrintStatus("Converting bigWig with bigWigToBedGraph: %s", path);
+        return source.readFd;
+    }
+
+    s32 handle = open(path, O_RDONLY);
+    if (handle < 0) PrintError("Could not open '%s'", path);
+    return handle;
+}
+
+global_variable
+volatile u08
+Global_Error_Flag = 0;
+
+global_function
+void
+FinishTrackRead(read_pool *readPool)
+{
+    ThreadPoolWait(readPool->pool);
+    if (debug_bedgraph_file && readPool->handle >= 0) close(readPool->handle);
+    readPool->handle = -1;
+
+    u32 childResult = FinishBigWigChild(Bedgraph_Child);
+    Bedgraph_Child = 0;
+    if (childResult == BIGWIG_CHILD_NOT_FOUND)
+    {
+        PrintError("bigWigToBedGraph was not found in PATH. It is required to read '%s'", debug_bedgraph_file);
+        Global_Error_Flag = 1;
+    }
+    else if (childResult == BIGWIG_CHILD_FAILED)
+    {
+        PrintError("bigWigToBedGraph failed on '%s'", debug_bedgraph_file);
+        Global_Error_Flag = 1;
+    }
+}
+
 global_function
 void
 FillReadBuffer(void *in)
@@ -685,22 +866,23 @@ GetNextReadBuffer(read_pool *readPool)
     return(buffer);
 }
 
-global_variable
-volatile u08
-Global_Error_Flag = 0;
-
 global_function
     void
 GrabStdIn()
 {
+    if (!Read_Pool) Read_Pool = CreateReadPool(&Working_Set);
+
+    s32 handle = OpenTrackFile(debug_bedgraph_file);
+    if (handle < 0)
+    {
+        Global_Error_Flag = 1;
+        return;
+    }
+    Read_Pool->handle = handle;
+
     line_buffer *buffer = TakeLineBufferFromQueue_Wait(Line_Buffer_Queue);
     u32 bufferPtr = 0;
-
-    read_pool *readPool = CreateReadPool(&Working_Set);
-    // readPool->handle = STDIN_FILENO; // read from stdin
-
-// used to debug
-    readPool->handle = debug_bedgraph_file? open((char*)debug_bedgraph_file, O_RDONLY) : STDIN_FILENO;
+    read_pool *readPool = Read_Pool;
 
     u08 line[KiloByte(16)];
     u32 linePtr = 0;
@@ -755,6 +937,7 @@ GrabStdIn()
 
     buffer->nLines = numLines;
     ThreadPoolAddTask(Thread_Pool, ProcessLine, buffer);
+    FinishTrackRead(Read_Pool);
 }
 
 struct
@@ -807,6 +990,144 @@ void output_graph_tmp()
     return;
 }
 
+global_function
+int
+LabelNameRank(const std::string &name)
+{
+    if (name.size() >= 2 && (name[0] == 'd' || name[0] == 'D'))
+    {
+        int rank = 0;
+        for (size_t i = 1; i < name.size(); ++i)
+        {
+            if (name[i] < '0' || name[i] > '9') return 100000;
+            rank = rank * 10 + (int)(name[i] - '0');
+        }
+        return rank;
+    }
+
+    if (name == "NA") return 1000000;
+    return 100000;
+}
+
+global_function
+bool
+LabelNameLess(const std::string &a, const std::string &b)
+{
+    int rankA = LabelNameRank(a);
+    int rankB = LabelNameRank(b);
+    if (rankA != rankB) return rankA < rankB;
+    return a < b;
+}
+
+// First-seen ids depend on thread order. Rewrite pixels so d1, d2, ... then
+// other labels, then NA, are 1, 2, 3, ... in that order.
+global_function
+void
+AssignStableGroupIds(u32 mapResolution)
+{
+    std::vector<std::string> names;
+    names.reserve(Group_Ids.size());
+    for (std::unordered_map<std::string, u32>::iterator it = Group_Ids.begin(); it != Group_Ids.end(); ++it)
+    {
+        names.push_back(it->first);
+    }
+    std::sort(names.begin(), names.end(), LabelNameLess);
+
+    std::vector<u32> remap(Group_Ids.size() + 1, 0);
+    for (u32 i = 0; i < (u32)names.size(); ++i)
+    {
+        u32 provisional = Group_Ids[names[i]];
+        remap[provisional] = i + 1;
+        PrintStatus("Group %u: %s", i + 1, names[i].c_str());
+    }
+
+    ForLoop(mapResolution)
+    {
+        u32 provisional = (u32)Graph_tmp->values[index];
+        if (provisional) Graph_tmp->values[index] = (f32)remap[provisional];
+    }
+}
+
+struct
+track_input
+{
+    const char *path;
+    u32 nameBuffer[16];
+    u08 hasPath;
+    u08 hasName;
+
+    track_input() : path(0), hasPath(0), hasName(0)
+    {
+        memset(nameBuffer, 0, sizeof(nameBuffer));
+    }
+};
+
+global_function
+u32
+ParseTrackIndex(const char *arg, char key, u32 *indexOut)
+{
+    if (arg[0] != '-' || arg[1] != key || arg[2] == 0) return 0;
+
+    u32 value = 0;
+    const char *cursor = arg + 2;
+    while (*cursor)
+    {
+        if (*cursor < '0' || *cursor > '9') return 0;
+        value = value * 10 + (u32)(*cursor - '0');
+        ++cursor;
+    }
+
+    *indexOut = value;
+    return 1;
+}
+
+global_function
+void
+ApplyGraphNameToDataType(u32 *nameInts)
+{
+    PrintStatus("Graph name: \'%s\'", (char *)nameInts);
+
+    std::string tmp_string((char *)nameInts);
+    std::transform(tmp_string.begin(), tmp_string.end(), tmp_string.begin(), ::tolower);
+    if (
+        tmp_string.find("not") != std::string::npos &&
+        tmp_string.find("weighted") != std::string::npos )
+    {
+        data_type = data_type_dic["not_weighted"];
+    }
+    else if (tmp_string.find("gap") != std::string::npos)
+    {
+        data_type = data_type_dic["gap"];
+    }
+    else if (
+        tmp_string.find("repeat") != std::string::npos &&
+        tmp_string.find("density") != std::string::npos)
+    {
+        data_type = data_type_dic["repeat_density"];
+    }
+    else if (tmp_string.find("coverage") != std::string::npos)
+    {
+        if (tmp_string.find("avg") == std::string::npos)
+        {
+            data_type = data_type_dic["coverage"];
+        }
+        else
+        {
+            data_type = data_type_dic["coverage_avg"];
+        }
+    }
+    else if (tmp_string.find("telomere") != std::string::npos)
+    {
+        data_type = data_type_dic["telomere"];
+    }
+    else
+    {
+        data_type = data_type_dic["default"];
+    }
+
+    PrintStatus("Extension type: %s (%d).", data_type_name_vec[data_type].c_str(), data_type);
+}
+
 
 MainArgs
 {   
@@ -824,14 +1145,30 @@ MainArgs
     {   
         printf("Usage is not correct, please check the usage below:\n");
         printf("\n%s\n\n", PretextGraph_Version);
-        printf(R"help(  (...bedgraph format |) PretextGraph -i input.pretext -n "graph name"
+        printf(R"help(  One track, from stdin or a file:
+    (...bedgraph format |) PretextGraph -i input.pretext -n "graph name"
                                         [-o output.pretext]
-                                        [-nf 0|1] (0: disable NOISE FILTER, 1: enable NOISE FILTER, (default: 1))
-                                        [-f debug.bedgraph] (debug bedgraph file)
-                                        [--help | -h] (view help)
-                                        [--licence] (view software licence)
-                                        [--thirdparty] (view third party software used)
-  (< bedgraph format))help");
+                                        [-nf 0|1] (0: disable noise filter, 1: enable, default: 1)
+                                        [-f bedgraph.file]
+                                        [--help | -h]
+                                        [--licence]
+                                        [--thirdparty]
+    (< bedgraph format)
+
+  Several tracks in one run. Each -tN file is one track and the matching -nN is its name.
+  Do not mix this form with a bare -n or -f.
+    PretextGraph -i input.pretext -t1 gap.bedgraph -n1 "gap" -t2 telomere.bedgraph -n2 "telomere" -t3 repeat_density.bigwig -n3 "repeat_density" -t4 alg.bedgraph -n4 "alg" [-o output.pretext]
+
+  -i       input Pretext file, required. Sequence names must match the bedgraph.
+  -n/-nN   graph name. Known names (gap, telomere, repeat_density, coverage, coverage_avg, not_weighted) select how values are accumulated. Any other name uses the default weighting and is still saved under that name.
+  -tN      track file. .bedgraph is read directly. .bigwig and .bw are converted by running UCSC bigWigToBedGraph (Jim Kent, kent/src/lib), which must be on PATH, so the bedGraph matches that tool.
+  -o       output Pretext file. If omitted, the graph is appended to the input file.
+  -nf      noise filter. Applied only to coverage and repeat_density (default: 1).
+
+  A numeric fourth column must be a non-negative integer and is stored under the -n name.
+  A label in that column (d1, d2, d3, d4, d5, d6, NA, ...) is stored in that same -n track.
+  Each label is a positive integer, so PretextView colours the intervals by group.
+  The mapping is printed as "Group N: label".)help");
 
         printf("\n\nPretextGraph --licence    <- view software licence\n");
         printf("PretextGraph --thirdparty <- view third party software used\n\n");
@@ -865,6 +1202,7 @@ MainArgs
     u32 copyBufferSize = KiloByte(256);
     copy_file_data copyFileData;
     bool NOISE_FILTER = true;
+    std::map<u32, track_input> Tracks;
 
     u32 index_arg = 1;
     while (index_arg < (u32) ArgCount) {   
@@ -929,10 +1267,81 @@ MainArgs
                 goto end;
             }
         }
+        else if (arg_tmp.size() > 2 && arg_tmp[1] == 't')
+        {
+            u32 trackId = 0;
+            if (!ParseTrackIndex(arg_tmp.c_str(), 't', &trackId))
+            {
+                PrintError("Expected -tN file, for example -t1 gap.bedgraph (got '%s')", ArgBuffer[index_arg]);
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            ++index_arg;
+            if (index_arg >= (u32)ArgCount || ArgBuffer[index_arg][0] == '-')
+            {
+                PrintError("File path required for -t%u", trackId);
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            if (Tracks[trackId].hasPath)
+            {
+                PrintError("Duplicate -t%u", trackId);
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            Tracks[trackId].path = ArgBuffer[index_arg];
+            Tracks[trackId].hasPath = 1;
+        }
+        else if (arg_tmp.size() > 2 && arg_tmp[1] == 'n')
+        {
+            u32 trackId = 0;
+            if (!ParseTrackIndex(arg_tmp.c_str(), 'n', &trackId))
+            {
+                PrintError("Expected -nN name, for example -n1 \"gap\" (got '%s')", ArgBuffer[index_arg]);
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            ++index_arg;
+            if (index_arg >= (u32)ArgCount || ArgBuffer[index_arg][0] == '-')
+            {
+                PrintError("Graph name required for -n%u", trackId);
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            if (Tracks[trackId].hasName)
+            {
+                PrintError("Duplicate -n%u", trackId);
+                returnCode = EXIT_FAILURE;
+                goto end;
+            }
+            PushStringIntoIntArray(Tracks[trackId].nameBuffer, ArrayCount(Tracks[trackId].nameBuffer), (u08 *)ArgBuffer[index_arg]);
+            Tracks[trackId].hasName = 1;
+        }
         index_arg ++ ;
     }
 
-        if (debug_bedgraph_file) 
+    if (!Tracks.empty() && (nameBuffer[0] || debug_bedgraph_file))
+    {
+        PrintError("Use either -n with one bedgraph, or -tN/-nN pairs");
+        returnCode = EXIT_FAILURE;
+        goto end;
+    }
+
+    for (std::map<u32, track_input>::iterator trackIt = Tracks.begin(); trackIt != Tracks.end(); ++trackIt)
+    {
+        if (!trackIt->second.hasPath || !trackIt->second.hasName)
+        {
+            PrintError("Track %u needs both -t%u file and -n%u name", trackIt->first, trackIt->first, trackIt->first);
+            returnCode = EXIT_FAILURE;
+            goto end;
+        }
+    }
+
+        if (!Tracks.empty())
+        {
+            fprintf(stdout, "[PretextGraph status] :: %u track(s)\n", (u32)Tracks.size());
+        }
+        else if (debug_bedgraph_file) 
         {
             fprintf(stdout, "[PretextGraph status] :: bedgraph file: %s\n", debug_bedgraph_file);
         }
@@ -961,49 +1370,7 @@ MainArgs
         PrintStatus("Noise filter is disabled");
     }
 
-    if (nameBuffer[0])
-    {
-        PrintStatus("Graph name: \'%s\'", (char *)nameBuffer);
-
-        // update the data_type flag
-        std::string tmp_string((char *)nameBuffer);
-        std::transform(tmp_string.begin(), tmp_string.end(), tmp_string.begin(), ::tolower);
-        if (
-            tmp_string.find("not") != std::string::npos &&
-            tmp_string.find("weighted") != std::string::npos )
-        {
-            data_type = data_type_dic["not_weighted"];
-        }
-        else if (tmp_string.find("gap") != std::string::npos) {
-            data_type = data_type_dic["gap"];
-        }
-        else if (
-            tmp_string.find("repeat") != std::string::npos &&
-            tmp_string.find("density") != std::string::npos) {
-            data_type = data_type_dic["repeat_density"];
-        }
-        else if (tmp_string.find("coverage") != std::string::npos)
-        {
-            if (tmp_string.find("avg") == std::string::npos)
-            {
-                data_type = data_type_dic["coverage"];
-            }
-            else
-            {
-                data_type = data_type_dic["coverage_avg"];
-            }
-        }
-        else if (tmp_string.find("telomere") != std::string::npos)
-        {
-            data_type = data_type_dic["telomere"];
-        }
-        else {
-            data_type = data_type_dic["telomere"];
-        }
-
-        PrintStatus("Extension type: %s (%d).", data_type_name_vec[data_type].c_str(),  data_type);
-    }
-    else
+    if (Tracks.empty() && !nameBuffer[0])
     {
         PrintError("Name label required");
         returnCode = EXIT_FAILURE;
@@ -1185,23 +1552,62 @@ MainArgs
                         memset((void *)Graph->values, 0, sizeof(s32) * mapResolution); // initalise the graph values to 0
                         // initialise the graph values_f and set values to 0.
                         Graph_tmp = new graph_f();
-                        Graph_tmp->values = new f32[mapResolution]; 
+                        Graph_tmp->values = new f32[mapResolution];
+                        Group_Overlap = new f64[mapResolution]; 
                         #ifdef DEBUG
                             Graph_debug = new graph_debug(mapResolution, 4);
                         #endif // DEBUG 
-                        for (u32 i = 0; i < mapResolution; i++) Graph_tmp->values[i] = 0;
-
-                        ThreadPoolAddTask(Thread_Pool, GrabStdIn, 0); // reading the graph data 
-
-                        ThreadPoolWait(Thread_Pool);
-
-                        if (Global_Error_Flag) exit(EXIT_FAILURE);
-
-                        if (!Data_Added)
+                        std::vector<track_input> trackList;
+                        if (Tracks.empty())
                         {
-                            PrintError("No valid bedgraph data processed");
-                            exit(EXIT_FAILURE);
+                            track_input one;
+                            one.path = debug_bedgraph_file;
+                            memcpy(one.nameBuffer, nameBuffer, sizeof(nameBuffer));
+                            one.hasPath = 1;
+                            one.hasName = 1;
+                            trackList.push_back(one);
                         }
+                        else
+                        {
+                            for (std::map<u32, track_input>::iterator it = Tracks.begin(); it != Tracks.end(); ++it)
+                            {
+                                trackList.push_back(it->second);
+                            }
+                        }
+
+                        for (u32 trackIndex = 0; trackIndex < (u32)trackList.size(); ++trackIndex)
+                        {
+                            memcpy(nameBuffer, trackList[trackIndex].nameBuffer, sizeof(nameBuffer));
+                            ApplyGraphNameToDataType(nameBuffer);
+                            debug_bedgraph_file = trackList[trackIndex].path;
+                            if (debug_bedgraph_file)
+                            {
+                                PrintStatus("Reading track file: %s", debug_bedgraph_file);
+                            }
+                            else
+                            {
+                                PrintStatus("Reading track from stdin");
+                            }
+
+                            memset(Graph_tmp->values, 0, sizeof(f32) * mapResolution);
+                            memset(Group_Overlap, 0, sizeof(f64) * mapResolution);
+                            memset((void *)Graph->values, 0, sizeof(s32) * mapResolution);
+                            Data_Added = 0;
+                            Integer_Data_Added = 0;
+                            Group_Data_Added = 0;
+                            Group_Ids.clear();
+                            Number_of_Lines_Read = 0;
+
+                            ThreadPoolAddTask(Thread_Pool, GrabStdIn, 0);
+                            ThreadPoolWait(Thread_Pool);
+
+                            if (Global_Error_Flag) exit(EXIT_FAILURE);
+
+                            if (!Data_Added)
+                            {
+                                PrintError("No valid bedgraph data processed");
+                                exit(EXIT_FAILURE);
+                            }
 
                         /*
                         PrintStatus("Normalising graph data...");
@@ -1238,23 +1644,19 @@ MainArgs
 
                         #ifdef DEBUG
                             output_graph_tmp(); // for check
-                            delete Graph_debug;
                         #endif
 
+                        if (Group_Data_Added) AssignStableGroupIds(mapResolution);
+
+                        if (Integer_Data_Added || Group_Data_Added)
+                        {
                         PrintStatus("Transfer f32 to s32...");
                         {   
 
-                            // Noise filter
+                            // Noise filter. Group ids must stay intact, so skip it for a label track.
                             if (
-                                /*
-                                {"default", 0 },
-                                {"repeat_density", 1},  
-                                {"gap", 2}, 
-                                {"coverage", 3},
-                                {"coverage_avg", 4},
-                                {"telomere", 5}
-                                */
-                                NOISE_FILTER && 
+                                NOISE_FILTER &&
+                                !Group_Data_Added &&
                                 (
                                     data_type == data_type_dic["coverage"] ||
                                     data_type == data_type_dic["repeat_density"])
@@ -1276,8 +1678,6 @@ MainArgs
                                 }
                                 Graph->values[index] = (s32)(Graph_tmp->values[index]);
                             }
-                            delete[] Graph_tmp->values;
-                            delete Graph_tmp;
                         }
 
                         PrintStatus("Saving graph...");
@@ -1313,7 +1713,20 @@ MainArgs
                                 PrintError("Could not compress graph data");
                                 returnCode = EXIT_FAILURE;
                             }
+                            FreeLastPush(Working_Set); // comp buffer, so the next track can allocate again
                         }
+                        } // numeric values, or one track of fourth-column groups
+
+                        }
+
+                        delete[] Graph_tmp->values;
+                        delete Graph_tmp;
+                        Graph_tmp = 0;
+                        delete[] Group_Overlap;
+                        Group_Overlap = 0;
+                        #ifdef DEBUG
+                            if (Graph_debug) delete Graph_debug;
+                        #endif
                         PrintStatus("Done\n\n");
                     }
                 }

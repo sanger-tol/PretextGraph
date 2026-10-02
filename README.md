@@ -4,6 +4,8 @@
 # PretextGraph
 Converts bedgraph formatted data and embeds inside a Pretext contact map.
 
+Version 0.1.0
+
 
 # Bioconda
 **Note: currently seems not able to install this tool via Bioconda. (will be fixed soon I hope...)**
@@ -20,22 +22,34 @@ Or, just PretextGraph can be installed with
 ```
 
 # Usage
-PretextGraph reads bedgraph formatted data from `stdin`, e.g:<br/>
+One track, from stdin or a file:
 
 ```bash
-> zcat bedgraph.file.gz | PretextGraph -i input.pretext -n "graph name"
-> PretextGraph -i input.pretext -n "graph name" < /path/to/bedgraph.file
-> bigWigToBedGraph bigwig.file /dev/stdout | PretextGraph -i input.pretext -n "graph name"
+zcat bedgraph.file.gz | PretextGraph -i input.pretext -n "graph name"
+PretextGraph -i input.pretext -n "graph name" < /path/to/bedgraph.file
+PretextGraph -i input.pretext -f /path/to/bedgraph.file -n "graph name" [-o output.pretext] [-nf 0|1]
 ```
 
+Several tracks in one run. Each `-tN` file is one track and the matching `-nN` is its extension name. Do not mix this form with a bare `-n` or `-f`.
+
 ```bash
-PretextGraph -i /path/to/input/.pretext/file -n "name_of_extension" [-o /path/to/the/output/.pretext/file] [-nf 0|1] < /path/to/extension/data/file
-``` 
+PretextGraph -i input.pretext \
+  -t1 gap.bedgraph -n1 "gap" \
+  -t2 telomere.bedgraph -n2 "telomere" \
+  -t3 repeat_density.bigwig -n3 "repeat_density" \
+  -t4 alg.bedgraph -n4 "alg" \
+  -o output.pretext
+```
 
 `-i` input Pretext file, required. Sequence names in the Pretext file must match sequence names in the bedgraph data; although relative sort order is unimportant.<br/>
-`-n` graph name, required. A name for the graph.<br/>
+`-n` / `-nN` graph name. A name for the graph. Known names (`gap`, `telomere`, `repeat_density`, `coverage`, `coverage_avg`, `not_weighted`) select how values are accumulated. Any other name, such as `alg`, uses the default weighting and is still saved under that name.<br/>
+`-tN` track file for the multi-track form. `.bedgraph` is read directly. `.bigwig` and `.bw` are converted as described below.<br/>
 `-o` output Pretext file, optional. If no output is specified the graph data will be appended to the input file.<br/>
 `-nf`: disable (0) or enable (1) the `noise_filter` (default: 1), which will only be applied to `coverage` or `repeat_density`, even this is enabled while process the `gap`, `coverage_average`.
+
+## bigWig
+
+`.bigwig` and `.bw` files are converted by running UCSC's `bigWigToBedGraph`, which must be on `PATH`. That program is a short wrapper over Jim Kent's C library in the UCSC Kent tree (`kent/src/lib`). It walks each chromosome with `bigWigIntervalQuery`, merges adjacent intervals that touch and share the same value, and prints them with `%g`. Calling that binary is what keeps the bedGraph identical to the UCSC tool.
 
 
 ## `.bedgraph` file format
@@ -51,7 +65,7 @@ chr1    50000   60000   3308
 chr1    60000   70000   3605
 chr1    70000   80000   3908
 ```
-***Important: only non-negative integer data is supported. All values in 4th column should be `int`.***
+A numeric fourth column must be a non-negative integer and is stored under the `-n` name. A label in that column (`d1`, `d2`, `d3`, `d4`, `d5`, `d6`, `NA`, ...) stays in that same track. Each label is stored as its own positive integer, so PretextView colours the intervals by group. The run prints the mapping as `Group N: label`.
 
 ## NOTE: Special process different extensions
 
@@ -88,7 +102,8 @@ std::unordered_map<std::string, int> data_type_dic{  // use this data_type
 # Third-Party acknowledgements
 PretextGraph uses the following third-party libraries:<br/>
 * [libdeflate](https://github.com/ebiggers/libdeflate)<br/>
-* [stb_sprintf.h](https://github.com/nothings/stb/blob/master/stb_sprintf.h)
+* [stb_sprintf.h](https://github.com/nothings/stb/blob/master/stb_sprintf.h)<br/>
+* [bigWigToBedGraph](https://github.com/ucscGenomeBrowser/kent/tree/master/src/utils/bigWigToBedGraph), from Jim Kent's UCSC Kent utilities (`kent/src/lib`). PretextGraph runs this program to convert `.bigwig` and `.bw` files. [UCSC license](https://genome.ucsc.edu/license/).
 
 # Installation
 
