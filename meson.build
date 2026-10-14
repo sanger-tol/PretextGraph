@@ -1,7 +1,7 @@
 project('PretextGraph', ['c', 'cpp'],
     license: 'MIT',
     meson_version: '>=0.57.1',
-    version: '0.0.9',
+    version: '0.1.0',
     default_options: ['buildtype=release', 'cpp_std=c++11'],
 )
 

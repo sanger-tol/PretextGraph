@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(
     PretextGraph 
     LANGUAGES CXX C
-    VERSION 0.0.9
+    VERSION 0.1.0
 )
 
 add_compile_definitions(PV="${PROJECT_VERSION}")
