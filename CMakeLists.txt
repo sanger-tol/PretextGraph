@@ -18,7 +18,10 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/.
 )
-link_directories(${CMAKE_SOURCE_DIR}/libdeflate)
+
+# Link the static archive. On macOS, -ldeflate prefers libdeflate.dylib,
+# whose install name is not found when ctest runs the binary.
+set(LIBDEFLATE_STATIC ${CMAKE_SOURCE_DIR}/libdeflate/libdeflate.a)
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_definitions(DEBUG)
@@ -72,7 +75,7 @@ foreach(ext_pair ${EXTENSIONS})
         ${TARGET_NAME}
         PRIVATE
         pthread
-        deflate
+        ${LIBDEFLATE_STATIC}
     )
 endforeach()
 
