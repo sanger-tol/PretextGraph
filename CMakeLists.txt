@@ -32,21 +32,42 @@ else()
 endif()
 
 
-# SIMD exntensions
-set(EXTENSIONS
-    ".avx2,-mavx2"
-    ".avx,-mavx"
-    ".sse42,-msse4.2"
-    ".sse41,-msse4.1"
+# UCSC bigWigToBedGraph, downloaded for this OS and placed next to PretextGraph.
+set(UCSC_BIGWIGTOBEDGRAPH "${CMAKE_BINARY_DIR}/bigWigToBedGraph")
+add_custom_command(
+    OUTPUT "${UCSC_BIGWIGTOBEDGRAPH}"
+    COMMAND "${CMAKE_SOURCE_DIR}/scripts/fetch_ucsc_bigWigToBedGraph.sh" "${UCSC_BIGWIGTOBEDGRAPH}"
+    COMMENT "Fetching UCSC bigWigToBedGraph"
+    VERBATIM
 )
+add_custom_target(ucsc_bigWigToBedGraph ALL DEPENDS "${UCSC_BIGWIGTOBEDGRAPH}")
+
+# SIMD extensions. x86 builds one binary per instruction set. arm64 builds one native binary.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    set(EXTENSIONS ".arm64")
+else()
+    set(EXTENSIONS
+        ".avx2,-mavx2"
+        ".avx,-mavx"
+        ".sse42,-msse4.2"
+        ".sse41,-msse4.1"
+    )
+endif()
 foreach(ext_pair ${EXTENSIONS})
-    string(REPLACE "," ";" ext_list "${ext_pair}")
-    list(GET ext_list 0 EXT_SUFFIX)
-    list(GET ext_list 1 EXT_FLAGS)
+    if(ext_pair MATCHES ",")
+        string(REPLACE "," ";" ext_list "${ext_pair}")
+        list(GET ext_list 0 EXT_SUFFIX)
+        list(GET ext_list 1 EXT_FLAGS)
+    else()
+        set(EXT_SUFFIX "${ext_pair}")
+        set(EXT_FLAGS "")
+    endif()
     set(TARGET_NAME "PretextGraph${EXT_SUFFIX}")
     
     add_executable(${TARGET_NAME} ${CMAKE_SOURCE_DIR}/PretextGraph.cpp)
-    target_compile_options(${TARGET_NAME} PRIVATE ${EXT_FLAGS})
+    if(EXT_FLAGS)
+        target_compile_options(${TARGET_NAME} PRIVATE ${EXT_FLAGS})
+    endif()
     target_link_libraries(
         ${TARGET_NAME}
         PRIVATE

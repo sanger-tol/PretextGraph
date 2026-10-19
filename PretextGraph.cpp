@@ -24,6 +24,7 @@ SOFTWARE.
 #include "utils.h"
 #include "file_type.h"
 #include "bigwig.h"
+#include "gzip.h"
 #include <map>
 
 #define String_(x) #x
@@ -81,6 +82,12 @@ Third-party software and resources used in this project, along with their respec
         ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
         CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
         SOFTWARE.
+
+    bigWigToBedGraph (UCSC Genome Browser, Jim Kent)
+        https://genome.ucsc.edu/license/
+        The build downloads UCSC's bigWigToBedGraph and runs it to convert
+        .bigwig and .bw files. That program is covered by the UCSC Genome
+        Browser license.
 
     stb_sprintf (https://github.com/nothings/stb/blob/master/stb_sprintf.h)
         ALTERNATIVE B - Public Domain (www.unlicense.org)
@@ -718,7 +725,7 @@ NormaliseGraph_Thread(void *in)
 #pragma clang diagnostic pop
         dataPtr += 8;
     }
-#else
+#elif defined(PRETEXT_X86)
     nLanes *= 2; // 2048
     __m128 normFactor = _mm_set1_ps (texelsPerBp);
     ForLoop(nLanes)  // 4 values will be processed at one iteration
@@ -736,6 +743,11 @@ NormaliseGraph_Thread(void *in)
         *(__m128i *)dataPtr = intLane;
 #pragma clang diagnostic pop
         dataPtr += 4; // process 4 * s32
+    }
+#else
+    ForLoop(nLanes * 8)
+    {
+        dataPtr[index] = (s32)((f32)dataPtr[index] * texelsPerBp);
     }
 #endif
 }
@@ -783,15 +795,53 @@ global_variable
 s32
 Bedgraph_Child = 0;
 
+enum
+{
+    TRACK_CHILD_NONE = 0,
+    TRACK_CHILD_BIGWIG = 1,
+    TRACK_CHILD_GZIP = 2
+};
+
+global_variable
+u32
+Track_Child_Kind = TRACK_CHILD_NONE;
+
 // Bedgraph is read directly. bigWig is converted on the fly by bigWigToBedGraph.
 global_function
 s32
 OpenTrackFile(const char *path)
 {
     Bedgraph_Child = 0;
+    Track_Child_Kind = TRACK_CHILD_NONE;
     if (!path) return STDIN_FILENO;
 
-    if (TrackFileTypeFromPath(path) == TRACK_FILE_BIGWIG)
+    track_file_type fileType = TrackFileTypeFromPath(path);
+    if (fileType == TRACK_FILE_GZIP)
+    {
+        gzip_source source = OpenGzipAsBedgraph(path);
+        if (source.openResult == GZIP_PIPE_FAILED)
+        {
+            PrintError("Could not create a pipe for '%s'", path);
+            return -1;
+        }
+        if (source.openResult == GZIP_FORK_FAILED)
+        {
+            PrintError("Could not start gzip for '%s'", path);
+            return -1;
+        }
+        if (source.openResult == GZIP_UNSUPPORTED)
+        {
+            PrintError("gzip input is not supported on Windows ('%s'). Decompress it to bedgraph first.", path);
+            return -1;
+        }
+
+        Bedgraph_Child = source.childPid;
+        Track_Child_Kind = TRACK_CHILD_GZIP;
+        PrintStatus("Decompressing bedgraph with gzip: %s", path);
+        return source.readFd;
+    }
+
+    if (fileType == TRACK_FILE_BIGWIG)
     {
         bigwig_source source = OpenBigWigAsBedgraph(path);
         if (source.openResult == BIGWIG_PIPE_FAILED)
@@ -811,6 +861,7 @@ OpenTrackFile(const char *path)
         }
 
         Bedgraph_Child = source.childPid;
+        Track_Child_Kind = TRACK_CHILD_BIGWIG;
         PrintStatus("Converting bigWig with bigWigToBedGraph: %s", path);
         return source.readFd;
     }
@@ -832,18 +883,36 @@ FinishTrackRead(read_pool *readPool)
     if (debug_bedgraph_file && readPool->handle >= 0) close(readPool->handle);
     readPool->handle = -1;
 
-    u32 childResult = FinishBigWigChild(Bedgraph_Child);
+    if (Track_Child_Kind == TRACK_CHILD_GZIP)
+    {
+        u32 childResult = FinishGzipChild(Bedgraph_Child);
+        if (childResult == GZIP_CHILD_NOT_FOUND)
+        {
+            PrintError("gzip was not found in PATH. It is required to read '%s'", debug_bedgraph_file);
+            Global_Error_Flag = 1;
+        }
+        else if (childResult == GZIP_CHILD_FAILED)
+        {
+            PrintError("gzip failed on '%s'", debug_bedgraph_file);
+            Global_Error_Flag = 1;
+        }
+    }
+    else
+    {
+        u32 childResult = FinishBigWigChild(Bedgraph_Child);
+        if (childResult == BIGWIG_CHILD_NOT_FOUND)
+        {
+            PrintError("UCSC bigWigToBedGraph was not found next to PretextGraph or on PATH. The build downloads it, and it is required to read '%s'", debug_bedgraph_file);
+            Global_Error_Flag = 1;
+        }
+        else if (childResult == BIGWIG_CHILD_FAILED)
+        {
+            PrintError("bigWigToBedGraph failed on '%s'", debug_bedgraph_file);
+            Global_Error_Flag = 1;
+        }
+    }
     Bedgraph_Child = 0;
-    if (childResult == BIGWIG_CHILD_NOT_FOUND)
-    {
-        PrintError("bigWigToBedGraph was not found in PATH. It is required to read '%s'", debug_bedgraph_file);
-        Global_Error_Flag = 1;
-    }
-    else if (childResult == BIGWIG_CHILD_FAILED)
-    {
-        PrintError("bigWigToBedGraph failed on '%s'", debug_bedgraph_file);
-        Global_Error_Flag = 1;
-    }
+    Track_Child_Kind = TRACK_CHILD_NONE;
 }
 
 global_function
@@ -1161,7 +1230,7 @@ MainArgs
 
   -i       input Pretext file, required. Sequence names must match the bedgraph.
   -n/-nN   graph name. Known names (gap, telomere, repeat_density, coverage, coverage_avg, not_weighted) select how values are accumulated. Any other name uses the default weighting and is still saved under that name.
-  -tN      track file. .bedgraph is read directly. .bigwig and .bw are converted by running UCSC bigWigToBedGraph (Jim Kent, kent/src/lib), which must be on PATH, so the bedGraph matches that tool.
+  -tN      track file. .bedgraph is read directly. .gz is decompressed with gzip -dc, which must be on PATH. .bigwig and .bw are converted by UCSC bigWigToBedGraph. The build downloads that program and runs the copy next to PretextGraph, or one found on PATH.
   -o       output Pretext file. If omitted, the graph is appended to the input file.
   -nf      noise filter. Applied only to coverage and repeat_density (default: 1).
 

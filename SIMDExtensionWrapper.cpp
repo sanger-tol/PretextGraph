@@ -20,11 +20,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include <cpuid.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#if !defined(__aarch64__) && !defined(__arm64__) && !defined(_M_ARM64)
+#include <cpuid.h>
+#define PRETEXT_X86_WRAPPER 1
+#endif
 
 #ifdef _WIN32
 #define WINVER 0x0601 // Target Windows 7 as a Minimum Platform
@@ -145,12 +149,13 @@ MainArgs
     }
 #endif
 
+    u32 hasNoExt = 1;
+
+#ifdef PRETEXT_X86_WRAPPER
     u32 hasSSE41 = 0;
     u32 hasSSE42 = 0;
     u32 hasAVX = 0;
     u32 hasAVX2 = 0;
-
-    u32 hasNoExt = 1;
 
     entry entries[] = {
         {
@@ -193,6 +198,15 @@ MainArgs
             hasAVX2 = b & (1 << 5);
         }
     }
+#else
+    entry entries[] = {
+        {
+            &hasNoExt,
+            (char *)"ARM64",
+            (char *)"arm64"
+        }
+    };
+#endif
 
     char buffer[1024];
     char *prosessName = 0;
