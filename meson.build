@@ -9,6 +9,16 @@ deps = [
     dependency('threads'), 
     # dependency('pybind11')
     ]
+
+# UCSC bigWigToBedGraph for this OS. Installed next to the PretextGraph binaries.
+custom_target('ucsc_bigWigToBedGraph',
+    output: 'bigWigToBedGraph',
+    command: [find_program('scripts/fetch_ucsc_bigWigToBedGraph.sh'), '@OUTPUT@'],
+    build_by_default: true,
+    install: true,
+    install_dir: get_option('bindir'),
+)
+meson.add_install_script(find_program('scripts/install_ucsc_bigWigToBedGraph.sh'))
 base_flags = ['-Ofast']
 if get_option('buildtype') == 'debug'
     base_flags = ['-O0', '-g', '-DDEBUG']
@@ -16,13 +26,18 @@ if get_option('buildtype') == 'debug'
 endif
 base_flags += ['-DPV=' + meson.project_version()]
 
-extensions = {
-    # '': [],
-    '.avx2': ['-mavx2'], 
-    '.avx': ['-mavx'], 
-    '.sse42': ['-msse4.2'], 
-    '.sse41': ['-msse4.1']
+if host_machine.cpu_family() == 'aarch64'
+    extensions = {
+        '.arm64': [],
     }
+else
+    extensions = {
+        '.avx2': ['-mavx2'],
+        '.avx': ['-mavx'],
+        '.sse42': ['-msse4.2'],
+        '.sse41': ['-msse4.1'],
+    }
+endif
 
 foreach ext, flag : extensions
     flags = base_flags + flag

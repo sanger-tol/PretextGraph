@@ -3,12 +3,13 @@
 
 #include "Header.h"
 
-// How a track path is read. Anything that is not bigWig is bedgraph text,
-// including .bedgraph and paths with no recognised suffix.
+// How a track path is read. Anything that is not bigWig or gzip is bedgraph
+// text, including .bedgraph and paths with no recognised suffix.
 enum track_file_type
 {
     TRACK_FILE_BEDGRAPH = 0,
-    TRACK_FILE_BIGWIG = 1
+    TRACK_FILE_BIGWIG = 1,
+    TRACK_FILE_GZIP = 2
 };
 
 global_function
@@ -34,9 +35,14 @@ global_function
 track_file_type
 TrackFileTypeFromPath(const char *path)
 {
-    if (path && (EndsWithIgnoreCase(path, ".bigwig") || EndsWithIgnoreCase(path, ".bw")))
+    if (!path) return TRACK_FILE_BEDGRAPH;
+    if (EndsWithIgnoreCase(path, ".bigwig") || EndsWithIgnoreCase(path, ".bw"))
     {
         return TRACK_FILE_BIGWIG;
+    }
+    if (EndsWithIgnoreCase(path, ".gz"))
+    {
+        return TRACK_FILE_GZIP;
     }
     return TRACK_FILE_BEDGRAPH;
 }

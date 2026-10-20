@@ -6,20 +6,19 @@ Converts bedgraph formatted data and embeds inside a Pretext contact map.
 
 Version 0.1.0
 
+Copyright (c) 2026 Genome Research Ltd.
+
 
 # Bioconda
-**Note: currently seems not able to install this tool via Bioconda. (will be fixed soon I hope...)**
+PretextGraph is published on [Bioconda](https://bioconda.github.io/), not conda-forge. Version 0.0.9 is built for `linux-64` and `osx-64` only.
 
-All commandline Pretext tools for Unix (Linux and Mac) are available on [bioconda](https://bioconda.github.io/).<br/>
+Version 0.1.0 builds natively on Apple Silicon and on Linux arm64. The recipe for that release is in [`recipe/`](recipe). After the GitHub release exists, copy `recipe/meta.yaml` and `recipe/build.sh` into [bioconda-recipes](https://github.com/bioconda/bioconda-recipes/tree/master/recipes/pretextgraph), and set `sha256` to the checksum of `PretextGraph-0.1.0.tar.xz`.
 
-The full suite of Pretext tools can be installed with
 ```sh
-> conda install pretext-suite
+conda install -c conda-forge -c bioconda pretextgraph
 ```
-Or, just PretextGraph can be installed with
-```sh
-> conda install pretextgraph
-```
+
+On an Apple Silicon Mac, `0.0.9` cannot be installed. Use a local 0.1.0 build until the Bioconda recipe is updated.
 
 # Usage
 One track, from stdin or a file:
@@ -43,17 +42,19 @@ PretextGraph -i input.pretext \
 
 `-i` input Pretext file, required. Sequence names in the Pretext file must match sequence names in the bedgraph data; although relative sort order is unimportant.<br/>
 `-n` / `-nN` graph name. A name for the graph. Known names (`gap`, `telomere`, `repeat_density`, `coverage`, `coverage_avg`, `not_weighted`) select how values are accumulated. Any other name, such as `alg`, uses the default weighting and is still saved under that name.<br/>
-`-tN` track file for the multi-track form. `.bedgraph` is read directly. `.bigwig` and `.bw` are converted as described below.<br/>
+`-tN` track file for the multi-track form. `.bedgraph` is read directly. `.gz` is decompressed with `gzip -dc`. `.bigwig` and `.bw` are converted as described below.<br/>
 `-o` output Pretext file, optional. If no output is specified the graph data will be appended to the input file.<br/>
 `-nf`: disable (0) or enable (1) the `noise_filter` (default: 1), which will only be applied to `coverage` or `repeat_density`, even this is enabled while process the `gap`, `coverage_average`.
 
 ## bigWig
 
-`.bigwig` and `.bw` files are converted by running UCSC's `bigWigToBedGraph`, which must be on `PATH`. That program is a short wrapper over Jim Kent's C library in the UCSC Kent tree (`kent/src/lib`). It walks each chromosome with `bigWigIntervalQuery`, merges adjacent intervals that touch and share the same value, and prints them with `%g`. Calling that binary is what keeps the bedGraph identical to the UCSC tool.
+`.bigwig` and `.bw` files are converted by UCSC's `bigWigToBedGraph`. The PretextGraph build downloads that program for the current operating system and places it next to the `PretextGraph` binaries. PretextGraph runs that copy, and if it is not there, `bigWigToBedGraph` on `PATH`.
+
+The Kent userApps sources are not compiled here. They need MySQL, libpng, and OpenSSL, and UCSC does not build this utility from source for Apple Silicon. The file fetched from [UCSC's download server](https://hgdownload.soe.ucsc.edu/admin/exe/) is their binary. On macOS that binary is linked against Homebrew `liblzma`. If that library is missing, the build copies one from conda-forge next to the program. [UCSC license](https://genome.ucsc.edu/license/).
 
 
 ## `.bedgraph` file format
-NOTE: while using the `bedgraph` as the input for extension file, the newline character must be `\n`, and the separator must be `\t`. There is an example `repeat_density.bedgraph` [file](data_for_test). The file is as follows:
+NOTE: while using the `bedgraph` as the input for extension file, the newline character must be `\n`, and the separator must be `\t`. A `.gz` file, such as `track.bedgraph.gz`, is decompressed with `gzip -dc`, which must be on `PATH`. There is an example `repeat_density.bedgraph` [file](data_for_test). The file is as follows:
 ```
 #1_usercol      2_usercol       3_usercol       N_density
 chr1    0       10000   5107
@@ -103,7 +104,7 @@ std::unordered_map<std::string, int> data_type_dic{  // use this data_type
 PretextGraph uses the following third-party libraries:<br/>
 * [libdeflate](https://github.com/ebiggers/libdeflate)<br/>
 * [stb_sprintf.h](https://github.com/nothings/stb/blob/master/stb_sprintf.h)<br/>
-* [bigWigToBedGraph](https://github.com/ucscGenomeBrowser/kent/tree/master/src/utils/bigWigToBedGraph), from Jim Kent's UCSC Kent utilities (`kent/src/lib`). PretextGraph runs this program to convert `.bigwig` and `.bw` files. [UCSC license](https://genome.ucsc.edu/license/).
+* [bigWigToBedGraph](https://hgdownload.soe.ucsc.edu/admin/exe/), UCSC's program for converting `.bigwig` and `.bw` files. The build downloads the binary for this operating system. [UCSC license](https://genome.ucsc.edu/license/).
 
 # Installation
 
@@ -111,6 +112,7 @@ PretextGraph uses the following third-party libraries:<br/>
 Requires:
 * clang >= 11.0.0
 * meson >= 0.57.1
+* curl, and network access, so the build can download UCSC `bigWigToBedGraph`
 ```bash
 git submodule update --init --recursive
 env CXX=clang meson setup --buildtype=release --unity on --prefix=<installation prefix> builddir

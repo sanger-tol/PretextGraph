@@ -4,7 +4,11 @@
 #include "Header.h"
 
 #ifndef _WIN32
+#include <limits.h>
 #include <sys/wait.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 // Result of starting bigWigToBedGraph.
@@ -32,7 +36,39 @@ struct bigwig_source
     u32 openResult;
 };
 
-// Fork bigWigToBedGraph and return the read end of its stdout.
+// UCSC bigWigToBedGraph downloaded next to this executable by the build.
+global_function
+u32
+BigWigConverterPath(char *out, u32 outLen)
+{
+#ifndef _WIN32
+    char exe[PATH_MAX];
+#ifdef __APPLE__
+    uint32_t size = (uint32_t)sizeof(exe);
+    if (_NSGetExecutablePath(exe, &size) != 0) return 0;
+#else
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0) return 0;
+    exe[n] = 0;
+#endif
+    char real[PATH_MAX];
+    if (!realpath(exe, real)) return 0;
+    char *slash = strrchr(real, '/');
+    if (!slash) return 0;
+    *slash = 0;
+    int wrote = snprintf(out, outLen, "%s/bigWigToBedGraph", real);
+    if (wrote < 0 || (u32)wrote >= outLen) return 0;
+    if (access(out, X_OK) != 0) return 0;
+    return 1;
+#else
+    (void)out;
+    (void)outLen;
+    return 0;
+#endif
+}
+
+// Fork UCSC bigWigToBedGraph and return the read end of its stdout.
+// The copy downloaded beside PretextGraph is used first. PATH is the fallback.
 // The caller owns readFd and must wait on childPid with FinishBigWigChild.
 global_function
 bigwig_source
@@ -65,7 +101,15 @@ OpenBigWigAsBedgraph(const char *path)
         dup2(pipeFds[1], STDOUT_FILENO);
         close(pipeFds[0]);
         close(pipeFds[1]);
-        execlp("bigWigToBedGraph", "bigWigToBedGraph", path, "/dev/stdout", (char *)0);
+        char converter[PATH_MAX];
+        if (BigWigConverterPath(converter, sizeof(converter)))
+        {
+            execl(converter, "bigWigToBedGraph", path, "/dev/stdout", (char *)0);
+        }
+        else
+        {
+            execlp("bigWigToBedGraph", "bigWigToBedGraph", path, "/dev/stdout", (char *)0);
+        }
         _exit(127);
     }
 
