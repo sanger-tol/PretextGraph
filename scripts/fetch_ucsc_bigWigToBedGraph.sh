@@ -77,6 +77,18 @@ if [[ ! -f "$sidecar" ]]; then
             break
         fi
     done
+    if [[ -z "$found" ]] && command -v brew >/dev/null 2>&1; then
+        HOMEBREW_NO_AUTO_UPDATE=1 brew install xz
+        for candidate in \
+            /opt/homebrew/opt/xz/lib/liblzma.5.dylib \
+            /usr/local/opt/xz/lib/liblzma.5.dylib
+        do
+            if [[ -f "$candidate" ]]; then
+                found=$candidate
+                break
+            fi
+        done
+    fi
     if [[ -z "$found" ]]; then
         if ! command -v conda >/dev/null 2>&1; then
             echo "UCSC bigWigToBedGraph needs liblzma at ${lzma_ref}." >&2
